@@ -23,3 +23,8 @@ build/
 venv/
 env/
 ENV/
+.venv/
+
+# Кэши инструментов
+.pytest_cache/
+.ruff_cache/

@@ -1,0 +1,16 @@
+[project]
+name = "fairgrowerbot"
+version = "1.0.0"
+description = "Telegram-бот для дружеских соревнований в чатах (inline-режим)"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

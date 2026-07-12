@@ -5,48 +5,64 @@ Telegram-бот для дружеских соревнований в чатах
 
 ## Как работает
 1. Пользователь пишет `@username_бота` в любом чате
-2. Пояжаются 5 кнопок: Grow, Top, Dick Of Day, Stats, Duel
-3. При нажатии кнопки — inline-результат обновляется с результатом команды
-4. Данные разделяются по чатам через реальный `chat_id` из `chosen_inline_result`
+2. Появляется меню команд (Grow, Top, Топ недели, Dick Of Day, Stats, Duel, Casino)
+3. При нажатии кнопки inline-сообщение обновляется результатом команды
+4. Данные разделяются по чатам ключом `chat_key`
+
+### Про chat_key (важно)
+Бот НЕ состоит в группах, поэтому реального `chat.id` в inline-режиме нет.
+`ChosenInlineResult` в Bot API вообще не содержит `chat_id` (прежняя версия
+падала на `chosen.chat_id`). Ключом разделения служит `chat_instance` из
+callback-запроса (для inline-сообщений) либо реальный `chat.id`, если бот
+всё же добавлен в группу. Хранится как непрозрачный идентификатор (TEXT).
 
 ## Архитектура
-- **main.py** — точка входа, регистрация обработчиков (InlineQueryHandler, ChosenInlineResultHandler, CallbackQueryHandler)
-- **handlers.py** — inline_query, chosen_inline_result, handle_button, команды (cmd_grow, cmd_top, cmd_dickofday, cmd_stats, cmd_duel, accept_duel, create_duel)
-- **database.py** — SQLite (fairdick.db), таблицы: user_sizes, duel_stats, active_duels, dick_of_day
-- **config.py** — константы (GROW_MIN=-10, GROW_MAX=35, DICK_OF_DAY_MIN=1, DICK_OF_DAY_MAX=30)
+- **main.py** — точка входа: логирование, InlineQueryHandler, CallbackQueryHandler, error handler
+- **handlers.py** — inline-меню, диспетчер кнопок, команды, дуэли, казино, достижения, таймаут дуэли (JobQueue)
+- **database.py** — SQLite: контекст-менеджер соединения, миграции, атомарные grow/дуэли. Таблицы: user_sizes, dick_of_day, duel_stats, active_duels, grow_history, achievements
+- **utils.py** — часовой пояс (zoneinfo) и `format_mention` с экранированием HTML
+- **config.py** — константы, список достижений, настройки дуэли/казино
 
 ## Команды
-- **📈 Grow** — случайный рост от -10 до +35 см, раз в сутки (после 00:00 МСК)
-- **🏆 Top** — топ-10 участников чата
-- **🎉 Dick Of Day** — случайный участник получает бонус +1..+30 см, раз в сутки. При повторном вызове показывает кто уже выбран
-- **📊 Stats** — статистика дуэлей (победы/поражения/суммарный выигрыш)
-- **⚔️ Duel** — кнопки ставок (1, 2, 3, 4, 5 см), другой участник может принять кнопкой
+- **📈 Grow** — рост -10..+35 см, раз в сутки; ведёт серию дней подряд (атомарно)
+- **🏆 Top** — топ-10 по размеру
+- **📅 Топ недели** — топ по приросту за 7 дней (из grow_history)
+- **🎉 Dick Of Day** — случайный участник получает +1..+30 см, раз в сутки
+- **📊 Stats** — размер, рекорд, серия, победы/поражения/винрейт, число достижений
+- **⚔️ Duel** — ставки 1–5 см, приём кнопкой (атомарно), таймаут 2 мин
+- **🎰 Casino** — ставка 1–10 см, шанс 50% на ×2
 
 ## Ключевые решения
-- `chat_id` получается через `chosen_inline_result.chosen.chat_id` — это реальный ID чата/группы
-- Если `chosen_inline_result` не сработал, используется `query.chat_instance` или сохранённый `_user_chat_ids`
-- Имена пользователей отображаются как `@username` или `[имя](tg://user?id=uid)` (HTML формат)
-- При отрицательном балансе — сообщение "😢 Твоя пипися слишком короткая! Возвращайся позже 🍆"
-- Дуэль: нельзя принять если у участника размер < ставки
-- Писюн дня хранится в таблице `dick_of_day` с бонусом, old_size, new_size
+- Все пользовательские имена экранируются (`html.escape`) — защита от поломки разметки
+- Размеры целочисленные (INTEGER)
+- Grow и приём дуэли атомарны (guarded UPDATE + rowcount), защита от даблкликов и гонок
+- Достижения: `INSERT OR IGNORE`, разблокировка возвращает «новизну»
+- Часовой пояс через `TIMEZONE` (по умолчанию Europe/Moscow)
+- Миграции существующих БД через `ALTER TABLE ADD COLUMN`
 
 ## Зависимости
-- python-telegram-bot >= 22.7
+- python-telegram-bot[job-queue] >= 22.7
 - python-dotenv >= 1.0.0
+- tzdata (для zoneinfo на минимальных системах)
+
+## Разработка
+```bash
+pip install -r requirements-dev.txt
+ruff check .
+pytest -q
+```
 
 ## Запуск
 ```bash
-python -m pip install -r requirements.txt
+pip install -r requirements.txt
 python main.py
 ```
 
 ## Важно
-- Inline Feedback включён в BotFather
-- Inline Mode включён в BotFather
-- Данные хранятся в fairdick.db (SQLite)
-- Каждый чат независим (данные не пересекаются)
+- Inline Mode включён в BotFather (Inline feedback НЕ требуется)
+- Данные в SQLite (`DATABASE_PATH`, по умолчанию fairdick.db)
+- Каждый чат независим
 
 ## Git
 - Репозиторий: https://github.com/airflow666/FairGrowerBot
-- Ветка: main
-- `.env` и `*.db` исключены из Git (конфиденциальные данные)
+- `.env` и `*.db` исключены из Git

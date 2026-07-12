@@ -1,0 +1,13 @@
+.git
+.gitignore
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.db
+.env
+tests/
+QWEN.md
+.github/
+*.md
