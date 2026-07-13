@@ -47,6 +47,8 @@ def main():
     app.add_handler(CommandHandler("help", group.cmd_help))
     app.add_handler(CommandHandler("grow", group.cmd_grow))
     app.add_handler(CommandHandler("profile", group.cmd_profile))
+    app.add_handler(CommandHandler("expedition", group.cmd_expedition))
+    app.add_handler(CommandHandler("inventory", group.cmd_inventory))
     app.add_handler(CommandHandler("top", group.cmd_top))
     app.add_handler(CommandHandler("weektop", group.cmd_weektop))
     app.add_handler(CommandHandler("dickofday", group.cmd_dickofday))

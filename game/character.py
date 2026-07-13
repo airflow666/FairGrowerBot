@@ -1,7 +1,7 @@
 """Операции над персонажем: опыт, класс, характеристики, шансы дуэли."""
 import config
 import database
-from game import classes, leveling
+from game import classes, leveling, loot
 
 
 def get_or_create(user_id, username=None, first_name=None) -> dict:
@@ -33,8 +33,12 @@ def set_class(user_id, klass) -> bool:
 
 
 def effective_stats(player: dict) -> dict:
-    """Характеристики персонажа по его уровню и классу."""
-    return classes.stats_for(player["level"], player["klass"])
+    """Характеристики персонажа: класс/уровень + бонусы надетых предметов."""
+    stats = classes.stats_for(player["level"], player["klass"])
+    for item in database.get_equipped(player["user_id"]):
+        for stat, val in loot.item_bonus(item["template"]).items():
+            stats[stat] = stats.get(stat, 0) + val
+    return stats
 
 
 def _combat_power(player: dict) -> int:

@@ -144,6 +144,32 @@ def init_db():
             )
         """)
 
+        # Экспедиции (глобальные, ключ — user_id; одна активная за раз)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS expeditions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                zone TEXT,
+                chat_key TEXT,
+                started_at TIMESTAMP,
+                ends_at TIMESTAMP,
+                status TEXT DEFAULT 'active'
+            )
+        """)
+
+        # Предметы игроков (глобальные, ключ — user_id)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS player_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                template TEXT,
+                rarity TEXT,
+                slot TEXT,
+                equipped INTEGER DEFAULT 0,
+                obtained_at TIMESTAMP
+            )
+        """)
+
         # Миграции для БД, созданных прежними версиями бота
         _ensure_column(conn, "user_sizes", "max_size", "INTEGER DEFAULT 0")
         _ensure_column(conn, "user_sizes", "grow_streak", "INTEGER DEFAULT 0")
@@ -626,3 +652,120 @@ def adjust_player_coins(user_id, delta):
             "SELECT coins FROM players WHERE user_id = ?", (user_id,)
         ).fetchone()
     return int(row["coins"]) if row else 0
+
+
+# --- Экспедиции -------------------------------------------------------------
+
+def get_active_expedition(user_id):
+    """Текущая незавершённая экспедиция игрока или ``None``."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM expeditions WHERE user_id = ? AND status = 'active' "
+            "ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def create_expedition(user_id, zone, chat_key, ends_at):
+    """Создать активную экспедицию, вернуть её id."""
+    with _connect() as conn:
+        cur = conn.execute(
+            """INSERT INTO expeditions (user_id, zone, chat_key, started_at, ends_at,
+                                        status)
+               VALUES (?, ?, ?, ?, ?, 'active')""",
+            (user_id, zone, chat_key, utils.now().isoformat(), ends_at),
+        )
+        return cur.lastrowid
+
+
+def get_pending_expedition_users(chat_key):
+    """user_id всех, у кого в этом чате есть вернувшаяся, но не забранная экспедиция."""
+    now = utils.now().isoformat()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT user_id FROM expeditions "
+            "WHERE chat_key = ? AND status = 'active' AND ends_at <= ?",
+            (str(chat_key), now),
+        ).fetchall()
+    return [r["user_id"] for r in rows]
+
+
+def claim_expedition(expedition_id):
+    """Атомарно завершить экспедицию. Возвращает её данные или ``None``."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE expeditions SET status = 'claimed' "
+            "WHERE id = ? AND status = 'active'",
+            (expedition_id,),
+        )
+        if cur.rowcount == 0:
+            return None
+        row = conn.execute(
+            "SELECT * FROM expeditions WHERE id = ?", (expedition_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+# --- Инвентарь и экипировка -------------------------------------------------
+
+def add_item(user_id, template, rarity, slot):
+    """Добавить предмет в инвентарь, вернуть его id."""
+    with _connect() as conn:
+        cur = conn.execute(
+            """INSERT INTO player_items (user_id, template, rarity, slot, obtained_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (user_id, template, rarity, slot, utils.now().isoformat()),
+        )
+        return cur.lastrowid
+
+
+def get_inventory(user_id, limit=None):
+    """Предметы игрока (сначала надетые, затем по редкости)."""
+    query = "SELECT * FROM player_items WHERE user_id = ? ORDER BY equipped DESC, id DESC"
+    params = [user_id]
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(limit)
+    with _connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_equipped(user_id):
+    """Надетые предметы игрока."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM player_items WHERE user_id = ? AND equipped = 1",
+            (user_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def equip_item(user_id, item_id):
+    """Надеть предмет (сняв другой в том же слоте). True при успехе."""
+    with _connect() as conn:
+        item = conn.execute(
+            "SELECT slot FROM player_items WHERE id = ? AND user_id = ?",
+            (item_id, user_id),
+        ).fetchone()
+        if item is None:
+            return False
+        conn.execute(
+            "UPDATE player_items SET equipped = 0 WHERE user_id = ? AND slot = ?",
+            (user_id, item["slot"]),
+        )
+        conn.execute(
+            "UPDATE player_items SET equipped = 1 WHERE id = ? AND user_id = ?",
+            (item_id, user_id),
+        )
+    return True
+
+
+def unequip_item(user_id, item_id):
+    """Снять предмет."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE player_items SET equipped = 0 WHERE id = ? AND user_id = ?",
+            (item_id, user_id),
+        )

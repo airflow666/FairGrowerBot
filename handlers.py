@@ -20,7 +20,7 @@ from telegram.ext import ContextTypes
 
 import config
 import database
-from game import character, classes, leveling
+from game import character, classes, expeditions, leveling, loot
 from utils import format_mention
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,8 @@ THUMB_URL = "https://img.icons8.com/emoji/48/000000/eggplant-emoji.png"
 MENU = [
     ("grow", "📈 Grow", "Увеличить пиписю"),
     ("profile", "👤 Профиль", "Персонаж, класс, уровень"),
+    ("expedition", "🗺️ Экспедиция", "Отправить героя за добычей"),
+    ("inventory", "🎒 Инвентарь", "Предметы и экипировка"),
     ("top", "🏆 Top", "Топ участников"),
     ("weektop", "📅 Топ недели", "Прирост за 7 дней"),
     ("dickofday", "🎉 Dick Of Day", "Писюн дня"),
@@ -114,6 +116,12 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _play_casino(query, context, chat_key, int(data.rsplit("_", 1)[1]))
         elif data.startswith("setclass_"):
             await _set_class(query, context, chat_key, data[len("setclass_"):])
+        elif data.startswith("start_exp_"):
+            await _start_expedition(query, context, chat_key, data[len("start_exp_"):])
+        elif data == "claim_exp":
+            await _claim_expedition(query, context, chat_key)
+        elif data.startswith("equip_"):
+            await _equip_item(query, context, chat_key, int(data.rsplit("_", 1)[1]))
         elif data == "link_stats":
             # Связка chat_instance ↔ chat_id уже выполнена в _chat_key выше
             await query.edit_message_text(
@@ -137,6 +145,8 @@ async def _run_command(query, context, chat_key, cmd):
     handlers = {
         "grow": lambda: cmd_grow(chat_key, user),
         "profile": lambda: cmd_profile(chat_key, user),
+        "expedition": lambda: cmd_expedition(chat_key, user),
+        "inventory": lambda: cmd_inventory(chat_key, user),
         "top": lambda: cmd_top(chat_key),
         "weektop": lambda: cmd_weektop(chat_key),
         "dickofday": lambda: cmd_dickofday(chat_key),
@@ -301,7 +311,7 @@ def _class_keyboard(owner_id):
 def cmd_profile(chat_key, user):
     player = character.get_or_create(user.id, user.username, user.first_name)
     level, into, need = leveling.progress(player["exp"])
-    stats = classes.stats_for(level, player["klass"])
+    stats = character.effective_stats(player)
     name = format_mention(user.id, user.username, user.first_name)
     size = database.get_user_size(user.id, chat_key)
 
@@ -339,6 +349,165 @@ async def _set_class(query, context, chat_key, payload):
     if not character.set_class(owner_id, code):
         return
     text, markup = cmd_profile(chat_key, query.from_user)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+
+
+# --- Экспедиции -------------------------------------------------------------
+
+def _format_duration(seconds):
+    h, m = seconds // 3600, (seconds % 3600) // 60
+    if h and m:
+        return f"{h}ч {m}м"
+    return f"{h}ч" if h else f"{m}м"
+
+
+def _format_left(td):
+    total = max(0, int(td.total_seconds()))
+    h, m = total // 3600, (total % 3600) // 60
+    return f"{h}ч {m}м" if h else f"{m}м"
+
+
+def cmd_expedition(chat_key, user):
+    player = character.get_or_create(user.id, user.username, user.first_name)
+    active = database.get_active_expedition(user.id)
+
+    if active:
+        zone = config.ZONES.get(active["zone"], {})
+        head = f"{zone.get('emoji', '')} {zone.get('name', '')}"
+        if expeditions.is_ready(active):
+            markup = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🎁 Забрать награду", callback_data="claim_exp")]]
+            )
+            return (f"🗺️ <b>Экспедиция вернулась!</b>\n\n{head}\nЗабери награду 👇",
+                    markup)
+        left = _format_left(expeditions.time_left(active))
+        return f"🗺️ <b>Герой в экспедиции</b>\n\n{head}\n⏳ Вернётся через {left}"
+
+    text = "🗺️ <b>Выбери зону для экспедиции:</b>\n\n"
+    rows = []
+    for code, zone, unlocked in expeditions.available_zones(player["level"]):
+        dur = _format_duration(zone["duration"])
+        if unlocked:
+            text += (f"{zone['emoji']} <b>{zone['name']}</b> — {dur}, "
+                     f"опыт {zone['exp']}, монеты {zone['coins'][0]}–{zone['coins'][1]}\n")
+            rows.append([InlineKeyboardButton(f"{zone['emoji']} {zone['name']}",
+                                              callback_data=f"start_exp_{code}")])
+        else:
+            text += f"🔒 {zone['emoji']} {zone['name']} — нужен уровень {zone['min_level']}\n"
+    return text, (InlineKeyboardMarkup(rows) if rows else None)
+
+
+async def _start_expedition(query, context, chat_key, zone_code):
+    user = query.from_user
+    result = expeditions.start(user.id, zone_code, chat_key)
+    if isinstance(result, str):
+        await query.answer(result, show_alert=True)
+        return
+    zone = config.ZONES[zone_code]
+    await query.edit_message_text(
+        f"🗺️ <b>Герой отправился в экспедицию!</b>\n\n"
+        f"{zone['emoji']} {zone['name']}\n"
+        f"⏳ Вернётся через {_format_duration(zone['duration'])}",
+        parse_mode=ParseMode.HTML,
+    )
+    _schedule_expedition_return(context, chat_key, zone["duration"])
+
+
+def _reward_text(reward):
+    zone = reward["zone"]
+    text = (
+        f"🗺️ <b>Экспедиция завершена!</b>\n{zone['emoji']} {zone['name']}\n\n"
+        f"✨ +{reward['exp']} XP\n"
+        f"🪙 +{reward['coins']} монет\n"
+        f"🎁 Добыча: {loot.item_label(reward['item'])}"
+    )
+    if reward["level_up"] > 0:
+        text += f"\n🎉 Новый уровень: <b>{reward['level']}</b>!"
+    return text
+
+
+async def _claim_expedition(query, context, chat_key):
+    reward = expeditions.claim(query.from_user.id)
+    if reward is None:
+        await query.answer("Награда уже забрана или экспедиция ещё идёт.",
+                           show_alert=True)
+        return
+    await query.edit_message_text(_reward_text(reward), parse_mode=ParseMode.HTML)
+
+
+def _is_postable_chat(chat_key):
+    """Можно ли отправить сообщение в чат (реальный chat_id активной группы)."""
+    try:
+        int(chat_key)
+    except (TypeError, ValueError):
+        return False
+    return any(c["chat_id"] == str(chat_key) for c in database.get_active_chats())
+
+
+def _schedule_expedition_return(context, chat_key, duration):
+    if context.job_queue is None or not _is_postable_chat(chat_key):
+        return
+    context.job_queue.run_once(
+        _expedition_return_job, duration, data={"chat_key": chat_key},
+    )
+
+
+async def _expedition_return_job(context: ContextTypes.DEFAULT_TYPE):
+    """Проверить вернувшиеся экспедиции этого чата и объявить добычу."""
+    chat_key = context.job.data["chat_key"]
+    # Дайджест: собираем все готовые и ещё не забранные экспедиции этого чата
+    lines = []
+    for user_id in database.get_pending_expedition_users(chat_key):
+        reward = expeditions.claim(user_id)
+        if reward is None:
+            continue
+        player = database.get_or_create_player(user_id)
+        name = format_mention(player["user_id"], player["username"],
+                              player["first_name"])
+        lines.append(f"🗺️ {name}: {loot.item_label(reward['item'])} "
+                     f"🪙 +{reward['coins']}")
+    if not lines:
+        return
+    text = "🎁 <b>Экспедиции вернулись!</b>\n\n" + "\n".join(lines)
+    try:
+        await context.bot.send_message(int(chat_key), text, parse_mode=ParseMode.HTML)
+    except Exception:  # noqa: BLE001
+        logger.exception("Не удалось объявить возврат экспедиций в чат %s", chat_key)
+
+
+# --- Инвентарь --------------------------------------------------------------
+
+def cmd_inventory(chat_key, user):
+    character.get_or_create(user.id, user.username, user.first_name)
+    items = database.get_inventory(user.id, limit=config.INVENTORY_DISPLAY_LIMIT)
+    if not items:
+        return "🎒 Инвентарь пуст.\nОтправляйся в экспедицию за добычей! 🗺️"
+
+    equipped = {i["slot"]: i for i in items if i["equipped"]}
+    text = "🎒 <b>Инвентарь</b>\n\n<b>Надето:</b>\n"
+    for slot, (emoji, sname, _stat) in config.SLOTS.items():
+        it = equipped.get(slot)
+        shown = loot.item_label(it["template"]) if it else "—"
+        text += f"{emoji} {sname}: {shown}\n"
+
+    text += "\n<b>Предметы:</b>\n"
+    rows = []
+    for it in items:
+        mark = "✅ " if it["equipped"] else ""
+        text += f"{mark}{loot.item_label(it['template'])}\n"
+        if not it["equipped"]:
+            rows.append([InlineKeyboardButton(
+                f"Надеть: {loot.item_label(it['template'])}",
+                callback_data=f"equip_{it['id']}")])
+    return text, (InlineKeyboardMarkup(rows) if rows else None)
+
+
+async def _equip_item(query, context, chat_key, item_id):
+    user = query.from_user
+    if not database.equip_item(user.id, item_id):
+        await query.answer("Это не твой предмет.", show_alert=True)
+        return
+    text, markup = cmd_inventory(chat_key, user)
     await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 

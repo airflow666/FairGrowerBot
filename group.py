@@ -27,6 +27,8 @@ WELCOME_TEXT = (
     "Теперь можно играть прямо в группе командами:\n"
     "📈 /grow — вырастить пиписю (раз в сутки)\n"
     "👤 /profile — персонаж: класс, уровень, статы\n"
+    "🗺️ /expedition — отправить героя за добычей\n"
+    "🎒 /inventory — предметы и экипировка\n"
     "🏆 /top — топ участников\n"
     "📅 /weektop — топ прироста за неделю\n"
     "🎉 /dickofday — писюн дня\n"
@@ -41,6 +43,8 @@ HELP_TEXT = (
     "🍆 <b>Команды FairGrowerBot:</b>\n\n"
     "📈 /grow — вырастить пиписю (раз в сутки)\n"
     "👤 /profile — персонаж: класс, уровень, статы\n"
+    "🗺️ /expedition — отправить героя за добычей\n"
+    "🎒 /inventory — предметы и экипировка\n"
     "🏆 /top — топ участников чата\n"
     "📅 /weektop — топ прироста за неделю\n"
     "🎉 /dickofday — писюн дня\n"
@@ -108,6 +112,14 @@ async def cmd_grow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _reply(update, handlers.cmd_profile(_chat_key(update), update.effective_user))
+
+
+async def cmd_expedition(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _reply(update, handlers.cmd_expedition(_chat_key(update), update.effective_user))
+
+
+async def cmd_inventory(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _reply(update, handlers.cmd_inventory(_chat_key(update), update.effective_user))
 
 
 async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
