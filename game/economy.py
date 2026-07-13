@@ -76,10 +76,9 @@ def buy_chest(user_id, chest_code, rng=random):
                 "have": int(player["coins"])}
     database.adjust_player_coins(user_id, -chest["price"])
     luck = character.effective_stats(player)["luck"]
-    template = loot.roll_item(luck=luck, zone_bonus=chest["bonus"], rng=rng)
-    tmpl = config.ITEM_TEMPLATES[template]
-    database.add_item(user_id, template, tmpl["rarity"], tmpl["slot"])
-    return {"status": "ok", "item": template}
+    item = loot.generate(luck=luck, zone_bonus=chest["bonus"], rng=rng)
+    database.add_item(user_id, item)
+    return {"status": "ok", "item": item}
 
 
 def change_class(user_id, klass):
@@ -93,3 +92,72 @@ def change_class(user_id, klass):
     database.adjust_player_coins(user_id, -config.CLASS_CHANGE_COST)
     database.set_player_class(user_id, klass)
     return {"status": "ok"}
+
+
+# --- Продажа предметов ------------------------------------------------------
+
+def sell_item(user_id, item_id):
+    """Продать один предмет. Возвращает выручку в монетах или ``None``."""
+    rarity = database.sell_item(user_id, item_id)
+    if rarity is None:
+        return None
+    price = config.SELL_PRICES.get(rarity, 0)
+    database.adjust_player_coins(user_id, price)
+    return price
+
+
+def sell_all(user_id, rarity):
+    """Продать все ненадетые предметы редкости. Возвращает (кол-во, монеты)."""
+    count = database.sell_all_by_rarity(user_id, rarity)
+    coins = count * config.SELL_PRICES.get(rarity, 0)
+    if coins:
+        database.adjust_player_coins(user_id, coins)
+    return count, coins
+
+
+# --- Обмен сантиметров на монеты (односторонний) ----------------------------
+
+def convert_cm(user_id, chat_key, cm):
+    """Обменять ``cm`` см (из чатового размера) на монеты. Возвращает исход."""
+    size = database.get_user_size(user_id, chat_key)
+    if size < cm:
+        return {"status": "no_size", "have": size, "need": cm}
+    coins = cm // config.CM_PER_COIN
+    if coins <= 0:
+        return {"status": "too_small"}
+    database.add_user_size(user_id, chat_key, -cm)
+    database.get_or_create_player(user_id)
+    database.adjust_player_coins(user_id, coins)
+    return {"status": "ok", "cm": cm, "coins": coins}
+
+
+# --- Казино на монеты -------------------------------------------------------
+
+def play_casino(user_id, bet, win):
+    """Применить результат казино в монетах. Возвращает новый баланс."""
+    delta = bet * (config.CASINO_WIN_MULTIPLIER - 1) if win else -bet
+    return database.adjust_player_coins(user_id, delta)
+
+
+# --- Крафт ------------------------------------------------------------------
+
+def craft(user_id, rarity, rng=random):
+    """Скрафтить 1 предмет тира выше из ``CRAFT_ITEMS_REQUIRED`` предметов тира.
+
+    Возвращает исход (см. ``status``).
+    """
+    order = config.RARITY_ORDER
+    if rarity not in order:
+        return {"status": "bad"}
+    idx = order.index(rarity)
+    if idx + 1 >= len(order):
+        return {"status": "max_tier"}
+    need = config.CRAFT_ITEMS_REQUIRED
+    have = database.count_items_by_rarity(user_id, rarity)
+    if have < need:
+        return {"status": "not_enough", "have": have, "need": need}
+    if not database.consume_items_for_craft(user_id, rarity, need):
+        return {"status": "not_enough", "have": have, "need": need}
+    item = loot.generate_of_rarity(order[idx + 1], rng=rng)
+    database.add_item(user_id, item)
+    return {"status": "ok", "item": item}

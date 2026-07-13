@@ -44,17 +44,22 @@ def hit(user_id, chat_key, rng=random):
         return {"status": "cooldown", "left": cd}
 
     player = database.get_or_create_player(user_id)
-    strength = character.effective_stats(player)["strength"]
+    stats = character.effective_stats(player)
+    strength = stats["strength"]
     damage = config.BOSS_BASE_DAMAGE + strength + rng.randint(0, strength)
+    crit = rng.random() < min(config.BOSS_CRIT_CAP,
+                              stats["crit"] * config.BOSS_CRIT_PER_POINT)
+    if crit:
+        damage *= 2
 
     new_hp = database.apply_boss_hit(boss["id"], user_id, damage)
     if new_hp <= 0:
         if database.defeat_boss(boss["id"]):
             rewards = _distribute_rewards(boss, rng)
             return {"status": "killed", "boss": boss, "damage": damage,
-                    "rewards": rewards}
+                    "crit": crit, "rewards": rewards}
         return {"status": "no_boss"}  # кто-то добил раньше
-    return {"status": "hit", "boss": boss, "damage": damage,
+    return {"status": "hit", "boss": boss, "damage": damage, "crit": crit,
             "hp": new_hp, "max_hp": boss["max_hp"]}
 
 
@@ -72,12 +77,11 @@ def _distribute_rewards(boss, rng):
 
         luck = character.effective_stats(player)["luck"]
         bonus = config.BOSS_TOP_LUCK_BONUS if i == 0 else 0.0
-        template = loot.roll_item(luck=luck, zone_bonus=bonus, rng=rng)
-        tmpl = config.ITEM_TEMPLATES[template]
-        database.add_item(uid, template, tmpl["rarity"], tmpl["slot"])
+        item = loot.generate(luck=luck, zone_bonus=bonus, rng=rng)
+        database.add_item(uid, item)
 
         results.append({
             "user_id": uid, "coins": coins, "damage": c["damage"],
-            "item": template, "top": i == 0,
+            "item": item, "top": i == 0,
         })
     return results

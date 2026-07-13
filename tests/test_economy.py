@@ -113,3 +113,73 @@ def test_property_max_level(env):
     for _ in range(len(config.PROPERTIES)):
         eco.upgrade_property(1)
     assert eco.upgrade_property(1)["status"] == "max"
+
+
+def test_sell_item_and_bulk(env):
+    eco, db, config = env["economy"], env["database"], env["config"]
+    from game import loot
+    db.get_or_create_player(1)
+    inst = loot.generate_of_rarity("rare", rng=random.Random(1))
+    item_id = db.add_item(1, inst)
+    price = eco.sell_item(1, item_id)
+    assert price == config.SELL_PRICES["rare"]
+    assert db.get_or_create_player(1)["coins"] == price
+    assert len(db.get_inventory(1)) == 0
+    # bulk
+    for _ in range(3):
+        db.add_item(1, loot.generate_of_rarity("common", rng=random.Random(2)))
+    count, coins = eco.sell_all(1, "common")
+    assert count == 3 and coins == 3 * config.SELL_PRICES["common"]
+
+
+def test_sell_equipped_blocked(env):
+    eco, db = env["economy"], env["database"]
+    from game import loot
+    db.get_or_create_player(1)
+    item_id = db.add_item(1, loot.generate_of_rarity("epic", rng=random.Random(1)))
+    db.equip_item(1, item_id)
+    assert eco.sell_item(1, item_id) is None  # надетый не продать
+
+
+def test_convert_cm_to_coins(env):
+    eco, db, config = env["economy"], env["database"], env["config"]
+    db.apply_grow(1, "chatA", 100, "a", "A")  # 100 см
+    r = eco.convert_cm(1, "chatA", 50)
+    assert r["status"] == "ok" and r["coins"] == 50 // config.CM_PER_COIN
+    assert db.get_user_size(1, "chatA") == 50
+    assert db.get_or_create_player(1)["coins"] == r["coins"]
+    # Больше, чем есть — отказ
+    assert eco.convert_cm(1, "chatA", 999)["status"] == "no_size"
+
+
+def test_casino_coins(env):
+    eco, db = env["economy"], env["database"]
+    db.get_or_create_player(1)
+    db.adjust_player_coins(1, 100)
+    assert eco.play_casino(1, 10, win=True) == 110
+    assert eco.play_casino(1, 10, win=False) == 100
+
+
+def test_craft_needs_five_and_upgrades(env):
+    eco, db = env["economy"], env["database"]
+    from game import loot
+    db.get_or_create_player(1)
+    assert eco.craft(1, "common")["status"] == "not_enough"
+    for _ in range(5):
+        db.add_item(1, loot.generate_of_rarity("common", rng=random.Random(3)))
+    r = eco.craft(1, "common", rng=random.Random(4))
+    assert r["status"] == "ok"
+    assert r["item"]["rarity"] == "uncommon"       # тир выше
+    assert db.count_items_by_rarity(1, "common") == 0  # 5 списаны
+    assert len(db.get_inventory(1)) == 1
+
+
+def test_craft_ignores_equipped(env):
+    eco, db = env["economy"], env["database"]
+    from game import loot
+    db.get_or_create_player(1)
+    ids = [db.add_item(1, loot.generate_of_rarity("rare", rng=random.Random(i)))
+           for i in range(5)]
+    db.equip_item(1, ids[0])          # один надет
+    # ненадетых только 4 -> крафт запрещён
+    assert eco.craft(1, "rare")["status"] == "not_enough"
