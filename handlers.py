@@ -36,22 +36,22 @@ logger = logging.getLogger(__name__)
 
 THUMB_URL = "https://img.icons8.com/emoji/48/000000/eggplant-emoji.png"
 
-# Пункты меню inline-режима: (id, заголовок, описание)
+# Экраны единого меню: (id, кнопка). Порядок задаёт раскладку хаба.
 MENU = [
-    ("grow", "📈 Grow", "Увеличить пиписю"),
-    ("profile", "👤 Профиль", "Персонаж, класс, уровень"),
-    ("expedition", "🗺️ Экспедиция", "Отправить героя за добычей"),
-    ("inventory", "🎒 Инвентарь", "Предметы и экипировка"),
-    ("boss", "🐉 Босс", "Сразиться с боссом чата"),
-    ("dungeon", "🏰 Подземелье", "Рискнуть в подземелье"),
-    ("shop", "🏪 Магазин", "Сундуки и смена класса"),
-    ("farm", "🏡 Ферма", "Пассивный доход"),
-    ("top", "🏆 Top", "Топ участников"),
-    ("weektop", "📅 Топ недели", "Прирост за 7 дней"),
-    ("dickofday", "🎉 Dick Of Day", "Писюн дня"),
-    ("stats", "📊 Stats", "Статистика"),
-    ("duel", "⚔️ Duel", "Дуэль"),
-    ("casino", "🎰 Casino", "Казино"),
+    ("grow", "📈 Grow"),
+    ("profile", "👤 Профиль"),
+    ("expedition", "🗺️ Экспедиция"),
+    ("inventory", "🎒 Инвентарь"),
+    ("boss", "🐉 Босс"),
+    ("dungeon", "🏰 Подземелье"),
+    ("shop", "🏪 Магазин"),
+    ("farm", "🏡 Ферма"),
+    ("duel", "⚔️ Дуэль"),
+    ("casino", "🎰 Казино"),
+    ("top", "🏆 Топ"),
+    ("weektop", "📅 Топ недели"),
+    ("dickofday", "🎉 Писюн дня"),
+    ("stats", "📊 Статистика"),
 ]
 
 
@@ -87,39 +87,61 @@ def _achievement_suffix(user_id, chat_key, candidate_codes):
 
 
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать меню команд в inline-режиме."""
-    results = []
-    for cmd_id, title, desc in MENU:
-        keyboard = InlineKeyboardMarkup(
-            [[InlineKeyboardButton(f"Нажми чтобы {title.lower()}",
-                                   callback_data=f"cmd_{cmd_id}")]]
+    """Inline-режим: одна статья «Меню» — вся игра внутри одного сообщения.
+
+    Раньше каждая команда была отдельной статьёй, и каждое действие роняло
+    в чат новое сообщение. Теперь навигация происходит кнопками внутри
+    одного сообщения — чат не засоряется.
+    """
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🎮 Открыть меню", callback_data="open_menu")]]
+    )
+    results = [
+        InlineQueryResultArticle(
+            id="menu",
+            title="🎮 Меню",
+            description="Вся игра в одном сообщении",
+            input_message_content=InputTextMessageContent(
+                "🎮 <b>FairGrowerBot</b>\nНажми кнопку, чтобы открыть меню 👇",
+                parse_mode=ParseMode.HTML,
+            ),
+            reply_markup=keyboard,
+            thumbnail_url=THUMB_URL,
         )
-        results.append(
-            InlineQueryResultArticle(
-                id=cmd_id,
-                title=title,
-                description=desc,
-                input_message_content=InputTextMessageContent(
-                    f"{title}\nНажми кнопку ниже 👇",
-                    parse_mode=ParseMode.HTML,
-                ),
-                reply_markup=keyboard,
-                thumbnail_url=THUMB_URL,
-            )
-        )
+    ]
     await update.inline_query.answer(results, cache_time=0)
+
+
+async def _answer(query, text=None, alert=False):
+    """Ответить на callback ровно один раз.
+
+    Telegram принимает только первый ``answerCallbackQuery`` — повторный
+    вызов бросает ошибку и попап не показывается. Поэтому обработчики
+    НЕ должны отвечать заранее: каждый путь отвечает один раз через этот
+    хелпер, а повторные/поздние ответы просто глотаются.
+    """
+    try:
+        await query.answer(text=text, show_alert=alert)
+    except Exception:  # noqa: BLE001 — уже отвечен или запрос истёк
+        pass
 
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Единая точка входа для всех callback-кнопок."""
     query = update.callback_query
-    await query.answer()
     data = query.data or ""
     chat_key = _chat_key(query)
     user = query.from_user
 
     try:
-        if data.startswith("cmd_"):
+        if data.startswith("nav_"):
+            await _nav(query, context, chat_key, data[len("nav_"):])
+        elif data == "open_menu":
+            # Первый нажавший становится владельцем меню
+            text, markup = cmd_menu(chat_key, user)
+            await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                          reply_markup=markup)
+        elif data.startswith("cmd_"):
             await _run_command(query, context, chat_key, data[len("cmd_"):])
         elif data.startswith("create_duel_"):
             await _create_duel(query, context, chat_key, int(data.rsplit("_", 1)[1]))
@@ -164,16 +186,16 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
     except Exception:  # noqa: BLE001 — не роняем event loop из-за одной кнопки
         logger.exception("Ошибка обработки кнопки %r (user=%s)", data, user.id)
-        try:
-            await query.answer("⚠️ Что-то пошло не так, попробуй ещё раз", show_alert=True)
-        except Exception:  # noqa: BLE001
-            pass
+        await _answer(query, "⚠️ Что-то пошло не так, попробуй ещё раз", alert=True)
+    finally:
+        # Погасить спиннер на кнопке, если ни один путь не ответил
+        await _answer(query)
 
 
-async def _run_command(query, context, chat_key, cmd):
-    """Выполнить команду меню и обновить сообщение."""
-    user = query.from_user
-    handlers = {
+def _screen(chat_key, user, screen):
+    """Отрисовать экран по коду. Возвращает (text, markup) или None."""
+    screens = {
+        "menu": lambda: cmd_menu(chat_key, user),
         "grow": lambda: cmd_grow(chat_key, user),
         "profile": lambda: cmd_profile(chat_key, user),
         "expedition": lambda: cmd_expedition(chat_key, user),
@@ -189,10 +211,74 @@ async def _run_command(query, context, chat_key, cmd):
         "duel": lambda: cmd_duel(chat_key, user),
         "casino": lambda: cmd_casino(chat_key, user),
     }
-    handler = handlers.get(cmd)
-    if handler is None:
+    render = screens.get(screen)
+    if render is None:
+        return None
+    return _as_pair(render())
+
+
+def _menu_row(owner_id):
+    """Кнопка возврата в меню владельца."""
+    return [InlineKeyboardButton("⬅️ Меню", callback_data=f"nav_{owner_id}_menu")]
+
+
+def _with_back(markup, owner_id):
+    """Добавить к клавиатуре экрана строку «⬅️ Меню»."""
+    rows = list(markup.inline_keyboard) if markup else []
+    return InlineKeyboardMarkup([*rows, _menu_row(owner_id)])
+
+
+def cmd_menu(chat_key, user):
+    """Хаб единого меню: все экраны — кнопками, владелец зашит в callback."""
+    player = character.get_or_create(user.id, user.username, user.first_name)
+    size = database.get_user_size(user.id, chat_key)
+    name = format_mention(user.id, user.username, user.first_name)
+    text = (
+        f"🎮 <b>Меню</b> — {name}\n\n"
+        f"⭐ Уровень {player['level']}  🪙 {int(player['coins'])} монет  "
+        f"📏 {size} см\n\n"
+        f"Выбери раздел (кнопки работают только для тебя):"
+    )
+    rows, row = [], []
+    for screen_id, label in MENU:
+        row.append(InlineKeyboardButton(label,
+                                        callback_data=f"nav_{user.id}_{screen_id}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return text, InlineKeyboardMarkup(rows)
+
+
+async def _nav(query, context, chat_key, payload):
+    """Навигация по единому меню: nav_{owner_id}_{screen}."""
+    owner_str, _, screen = payload.partition("_")
+    try:
+        owner_id = int(owner_str)
+    except ValueError:
         return
-    text, markup = _as_pair(handler())
+    user = query.from_user
+    if user.id != owner_id:
+        await _answer(query, "Это не твоё меню! Открой своё: @бот → Меню",
+                      alert=True)
+        return
+    rendered = _screen(chat_key, user, screen)
+    if rendered is None:
+        return
+    text, markup = rendered
+    if screen != "menu":
+        markup = _with_back(markup, owner_id)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                  reply_markup=markup)
+
+
+async def _run_command(query, context, chat_key, cmd):
+    """Совместимость: кнопки старых сообщений (cmd_*) продолжают работать."""
+    rendered = _screen(chat_key, query.from_user, cmd)
+    if rendered is None:
+        return
+    text, markup = rendered
     await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 
@@ -376,10 +462,10 @@ async def _set_class(query, context, chat_key, payload):
     except ValueError:
         return
     if query.from_user.id != owner_id:
-        await query.answer("Это не твой профиль!", show_alert=True)
+        await _answer(query, "Это не твой профиль!", alert=True)
         return
     if character.get_or_create(owner_id)["klass"]:
-        await query.answer("Класс уже выбран.", show_alert=True)
+        await _answer(query, "Класс уже выбран.", alert=True)
         return
     if not character.set_class(owner_id, code):
         return
@@ -436,7 +522,7 @@ async def _start_expedition(query, context, chat_key, zone_code):
     user = query.from_user
     result = expeditions.start(user.id, zone_code, chat_key)
     if isinstance(result, str):
-        await query.answer(result, show_alert=True)
+        await _answer(query, result, alert=True)
         return
     zone = config.ZONES[zone_code]
     await query.edit_message_text(
@@ -464,8 +550,8 @@ def _reward_text(reward):
 async def _claim_expedition(query, context, chat_key):
     reward = expeditions.claim(query.from_user.id)
     if reward is None:
-        await query.answer("Награда уже забрана или экспедиция ещё идёт.",
-                           show_alert=True)
+        await _answer(query, "Награда уже забрана или экспедиция ещё идёт.",
+                           alert=True)
         return
     await query.edit_message_text(_reward_text(reward), parse_mode=ParseMode.HTML)
 
@@ -540,7 +626,7 @@ def cmd_inventory(chat_key, user):
 async def _equip_item(query, context, chat_key, item_id):
     user = query.from_user
     if not database.equip_item(user.id, item_id):
-        await query.answer("Это не твой предмет.", show_alert=True)
+        await _answer(query, "Это не твой предмет.", alert=True)
         return
     text, markup = cmd_inventory(chat_key, user)
     await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
@@ -588,19 +674,19 @@ async def _boss_hit(query, context, chat_key):
     status = result["status"]
 
     if status == "no_boss":
-        await query.answer("Босс уже повержен!", show_alert=True)
+        await _answer(query, "Босс уже повержен!", alert=True)
     elif status == "cooldown":
         mins = int(result["left"] // 60) + 1
-        await query.answer(f"Ты уже бил. Отдышись ~{mins} мин.", show_alert=True)
+        await _answer(query, f"Ты уже бил. Отдышись ~{mins} мин.", alert=True)
     elif status == "hit":
-        await query.answer(f"⚔️ Урон: {result['damage']}")
+        await _answer(query, f"⚔️ Урон: {result['damage']}")
         updated = dict(result["boss"])
         updated["hp"] = result["hp"]
         text, markup = boss_message(updated)
         await query.edit_message_text(text, parse_mode=ParseMode.HTML,
                                       reply_markup=markup)
     elif status == "killed":
-        await query.answer("💥 БОСС ПОВЕРЖЕН!")
+        await _answer(query, "💥 БОСС ПОВЕРЖЕН!")
         await query.edit_message_text(_boss_defeat_text(result),
                                       parse_mode=ParseMode.HTML)
 
@@ -652,9 +738,9 @@ async def _dungeon_enter(query, context, chat_key):
     user = query.from_user
     result = dungeon.enter(user.id)
     if result["status"] == "no_coins":
-        await query.answer(
+        await _answer(query,
             f"Нужно {result['need']} монет (у тебя {result['have']}).",
-            show_alert=True,
+            alert=True,
         )
         return
     text, markup = _dungeon_room_message(result["run"], user.id)
@@ -664,15 +750,15 @@ async def _dungeon_enter(query, context, chat_key):
 async def _dungeon_deeper(query, context, owner_id):
     user = query.from_user
     if user.id != owner_id:
-        await query.answer("Это не твой забег!", show_alert=True)
+        await _answer(query, "Это не твой забег!", alert=True)
         return
     result = dungeon.advance(user.id)
     status = result["status"]
     if status == "no_run":
-        await query.answer("Забег уже завершён.", show_alert=True)
+        await _answer(query, "Забег уже завершён.", alert=True)
         return
     if status == "dead":
-        await query.answer("💀 Ты погиб!", show_alert=True)
+        await _answer(query, "💀 Ты погиб!", alert=True)
         await query.edit_message_text(
             f"💀 <b>Ты погиб на глубине {result['depth']}!</b>\n\n"
             f"Ловушка нанесла {result['damage']} урона.\n"
@@ -683,20 +769,20 @@ async def _dungeon_deeper(query, context, owner_id):
     run = database.get_active_dungeon_run(user.id)
     text, markup = _dungeon_room_message(run, owner_id)
     if status == "trap":
-        await query.answer(f"🪤 Ловушка! -{result['damage']} HP")
+        await _answer(query, f"🪤 Ловушка! -{result['damage']} HP")
     else:
-        await query.answer(f"📦 Сундук! +{result['gain']} монет")
+        await _answer(query, f"📦 Сундук! +{result['gain']} монет")
     await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 
 async def _dungeon_leave(query, context, owner_id):
     user = query.from_user
     if user.id != owner_id:
-        await query.answer("Это не твой забег!", show_alert=True)
+        await _answer(query, "Это не твой забег!", alert=True)
         return
     summary = dungeon.leave(user.id)
     if summary is None:
-        await query.answer("Забег уже завершён.", show_alert=True)
+        await _answer(query, "Забег уже завершён.", alert=True)
         return
     items_text = "\n".join(loot.item_label(i) for i in summary["items"]) or "—"
     text = (
@@ -733,13 +819,13 @@ def cmd_shop(chat_key, user):
 async def _buy_chest(query, context, chat_key, chest_code):
     result = economy.buy_chest(query.from_user.id, chest_code)
     if result["status"] == "no_coins":
-        await query.answer(f"Нужно {result['need']} монет (у тебя {result['have']}).",
-                           show_alert=True)
+        await _answer(query, f"Нужно {result['need']} монет (у тебя {result['have']}).",
+                           alert=True)
         return
     if result["status"] != "ok":
         return
-    await query.answer(f"🎁 Получено: {loot.item_label(result['item'])}",
-                       show_alert=True)
+    await _answer(query, f"🎁 Получено: {loot.item_label(result['item'])}",
+                       alert=True)
     text, markup = cmd_shop(chat_key, query.from_user)
     await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
@@ -748,9 +834,9 @@ async def _shop_reclass(query, context, chat_key):
     user = query.from_user
     player = database.get_or_create_player(user.id)
     if player["coins"] < config.CLASS_CHANGE_COST:
-        await query.answer(
+        await _answer(query,
             f"Нужно {config.CLASS_CHANGE_COST} монет (у тебя {int(player['coins'])}).",
-            show_alert=True)
+            alert=True)
         return
     rows = [
         [InlineKeyboardButton(f"{cls['emoji']} {cls['name']}",
@@ -770,16 +856,16 @@ async def _reclass(query, context, chat_key, payload):
     except ValueError:
         return
     if query.from_user.id != owner_id:
-        await query.answer("Это не твой профиль!", show_alert=True)
+        await _answer(query, "Это не твой профиль!", alert=True)
         return
     result = economy.change_class(owner_id, code)
     if result["status"] == "no_coins":
-        await query.answer(f"Нужно {result['need']} монет.", show_alert=True)
+        await _answer(query, f"Нужно {result['need']} монет.", alert=True)
         return
     if result["status"] != "ok":
         return
-    await query.answer(f"Класс изменён на {config.CLASSES[code]['name']}!",
-                       show_alert=True)
+    await _answer(query, f"Класс изменён на {config.CLASSES[code]['name']}!",
+                       alert=True)
     text, markup = cmd_shop(chat_key, query.from_user)
     await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
@@ -817,8 +903,8 @@ def cmd_farm(chat_key, user):
 
 async def _claim_income(query, context, chat_key):
     amount = economy.claim_income(query.from_user.id)
-    await query.answer(f"🪙 Собрано: +{amount} монет" if amount
-                       else "Пока нечего собирать.", show_alert=True)
+    await _answer(query, f"🪙 Собрано: +{amount} монет" if amount
+                       else "Пока нечего собирать.", alert=True)
     text, markup = cmd_farm(chat_key, query.from_user)
     await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
@@ -826,14 +912,14 @@ async def _claim_income(query, context, chat_key):
 async def _upgrade_prop(query, context, chat_key):
     result = economy.upgrade_property(query.from_user.id)
     if result["status"] == "no_coins":
-        await query.answer(f"Нужно {result['need']} монет (у тебя {result['have']}).",
-                           show_alert=True)
+        await _answer(query, f"Нужно {result['need']} монет (у тебя {result['have']}).",
+                           alert=True)
         return
     if result["status"] == "max":
-        await query.answer("Ферма уже максимального уровня!", show_alert=True)
+        await _answer(query, "Ферма уже максимального уровня!", alert=True)
         return
-    await query.answer(f"🏡 {result['property']['name']} (ур. {result['level']})!",
-                       show_alert=True)
+    await _answer(query, f"🏡 {result['property']['name']} (ур. {result['level']})!",
+                       alert=True)
     text, markup = cmd_farm(chat_key, query.from_user)
     await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
@@ -958,24 +1044,29 @@ async def _duel_timeout_job(context: ContextTypes.DEFAULT_TYPE):
 async def _accept_duel(query, context, chat_key, duel_id):
     accepter = query.from_user
 
-    duel = database.claim_duel(duel_id, accepter.id)
-    if duel is None:
-        await query.answer("Дуэль уже завершена или истекла!", show_alert=True)
+    # Проверки — ДО атомарного клейма, чтобы не «сжигать» дуэль зря:
+    # раньше при самоприёме дуэль пересоздавалась с новым id, а кнопка
+    # ссылалась на старый — вызов становился мёртвым.
+    duel = database.get_duel(duel_id)
+    if duel is None or duel["status"] != "active":
+        await _answer(query, "Дуэль уже завершена или истекла!", alert=True)
         return
 
     challenger_id = duel["challenger_id"]
     bet = int(duel["bet"])
 
     if accepter.id == challenger_id:
-        # Возвращаем дуэль в активное состояние — вызвавший не может принять сам
-        database.create_duel(challenger_id, chat_key, bet, duel.get("inline_message_id"))
-        await query.answer("Ты не можешь принять свой же вызов!", show_alert=True)
+        await _answer(query, "Ты не можешь принять свой же вызов!", alert=True)
         return
 
     if database.get_user_size(accepter.id, chat_key) < bet:
-        database.create_duel(challenger_id, chat_key, bet, duel.get("inline_message_id"))
-        await query.answer("😢 Твоя пипися короче ставки! Возвращайся позже",
-                           show_alert=True)
+        await _answer(query, "😢 Твоя пипися короче ставки! Возвращайся позже",
+                      alert=True)
+        return
+
+    # Атомарный клейм: при гонке двух принявших выигрывает ровно один
+    if database.claim_duel(duel_id, accepter.id) is None:
+        await _answer(query, "Дуэль уже завершена или истекла!", alert=True)
         return
 
     _cancel_duel_timeout(context, duel_id)
@@ -1027,22 +1118,23 @@ async def _play_casino(query, context, chat_key, bet):
     user = query.from_user
     size = database.get_user_size(user.id, chat_key)
     if bet > size:
-        await query.answer("⚠️ Ставка больше твоего размера!", show_alert=True)
+        await _answer(query, "⚠️ Ставка больше твоего размера!", alert=True)
         return
 
     win = random.random() < 0.5
     new_size = database.play_casino(user.id, chat_key, bet, win)
     if win:
         prize = bet * (config.CASINO_WIN_MULTIPLIER - 1)
-        text = (
-            f"🎰 <b>ПОБЕДА!</b>\n\n"
-            f"Ты выиграл <b>+{prize} см</b>! 🎉\n"
-            f"📏 Новый размер: <b>{new_size} см</b>"
-        )
+        popup = f"🎉 ПОБЕДА! +{prize} см (теперь {new_size} см)"
     else:
-        text = (
-            f"🎰 <b>МИМО!</b>\n\n"
-            f"Ставка <b>{bet} см</b> сгорела 💀\n"
-            f"📏 Новый размер: <b>{new_size} см</b>"
-        )
-    await query.edit_message_text(text, parse_mode=ParseMode.HTML)
+        popup = f"💀 МИМО! -{bet} см (теперь {new_size} см)"
+    # Результат — попапом, а панель ставок остаётся: можно крутить дальше
+    # в том же сообщении, не роняя новые в чат.
+    await _answer(query, popup, alert=True)
+    rendered = _as_pair(cmd_casino(chat_key, user))
+    text, markup = rendered
+    try:
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                      reply_markup=_with_back(markup, user.id))
+    except Exception:  # noqa: BLE001 — текст не изменился (тот же размер) — не страшно
+        pass

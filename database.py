@@ -453,6 +453,15 @@ def create_duel(challenger_id, chat_id, bet, inline_message_id=None):
         return cur.lastrowid
 
 
+def get_duel(duel_id):
+    """Дуэль по id (любой статус) или ``None``."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM active_duels WHERE duel_id = ?", (duel_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def claim_duel(duel_id, accepter_id):
     """Атомарно «занять» дуэль. Возвращает данные дуэли или ``None``.
 

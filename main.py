@@ -45,6 +45,7 @@ def main():
     # Групповой режим: команды и добавление/удаление бота из чата
     app.add_handler(CommandHandler("start", group.cmd_start))
     app.add_handler(CommandHandler("help", group.cmd_help))
+    app.add_handler(CommandHandler("menu", group.cmd_menu))
     app.add_handler(CommandHandler("grow", group.cmd_grow))
     app.add_handler(CommandHandler("profile", group.cmd_profile))
     app.add_handler(CommandHandler("expedition", group.cmd_expedition))
