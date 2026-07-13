@@ -93,29 +93,43 @@ docker run -d --name fairgrowerbot \
 
 База данных сохраняется в volume `/data`, поэтому переживает перезапуск контейнера.
 
-### systemd
+### Обновление на сервере (с сохранением базы)
 
-```ini
-[Unit]
-Description=FairDickGrowerBot Telegram Bot
-After=network.target
-
-[Service]
-Type=simple
-User=ubuntu
-WorkingDirectory=/path/to/FairGrowerBot
-ExecStart=/path/to/python main.py
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
+Скрипт `deploy/upgrade.sh` делает всё безопасно: бэкап базы → остановка бота
+(systemd-сервис или процесс `python main.py`) → `git pull` → установка
+зависимостей → миграция БД с проверкой, что записи не потерялись → запуск
+обратно. При сбое до успешной миграции база восстанавливается из бэкапа.
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now fairdickbot
+cd /path/to/FairGrowerBot
+./deploy/upgrade.sh              # обновить текущую ветку
+./deploy/upgrade.sh main        # или указать ветку
+SERVICE=fairdickbot ./deploy/upgrade.sh   # если сервис не определился сам
 ```
+
+### systemd (автозапуск)
+
+Проще всего — скрипт установки: он подставит в шаблон `deploy/fairdickbot.service`
+вашего пользователя, путь к репозиторию и интерпретатор (venv, если есть),
+поставит юнит и включит автозапуск:
+
+```bash
+cd /path/to/FairGrowerBot
+sudo ./deploy/install-service.sh
+```
+
+После этого `deploy/upgrade.sh` сам увидит сервис и будет им управлять.
+
+Управление:
+
+```bash
+sudo systemctl status fairdickbot
+sudo systemctl restart fairdickbot
+journalctl -u fairdickbot -f        # логи
+```
+
+Шаблон юнита лежит в `deploy/fairdickbot.service` — при желании его можно
+заполнить и установить вручную.
 
 ---
 
