@@ -20,7 +20,16 @@ from telegram.ext import ContextTypes
 
 import config
 import database
-from game import boss, character, classes, dungeon, expeditions, leveling, loot
+from game import (
+    boss,
+    character,
+    classes,
+    dungeon,
+    economy,
+    expeditions,
+    leveling,
+    loot,
+)
 from utils import format_mention
 
 logger = logging.getLogger(__name__)
@@ -35,6 +44,8 @@ MENU = [
     ("inventory", "🎒 Инвентарь", "Предметы и экипировка"),
     ("boss", "🐉 Босс", "Сразиться с боссом чата"),
     ("dungeon", "🏰 Подземелье", "Рискнуть в подземелье"),
+    ("shop", "🏪 Магазин", "Сундуки и смена класса"),
+    ("farm", "🏡 Ферма", "Пассивный доход"),
     ("top", "🏆 Top", "Топ участников"),
     ("weektop", "📅 Топ недели", "Прирост за 7 дней"),
     ("dickofday", "🎉 Dick Of Day", "Писюн дня"),
@@ -132,6 +143,16 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _dungeon_deeper(query, context, int(data.rsplit("_", 1)[1]))
         elif data.startswith("dng_leave_"):
             await _dungeon_leave(query, context, int(data.rsplit("_", 1)[1]))
+        elif data.startswith("buy_chest_"):
+            await _buy_chest(query, context, chat_key, data[len("buy_chest_"):])
+        elif data == "shop_reclass":
+            await _shop_reclass(query, context, chat_key)
+        elif data.startswith("reclass_"):
+            await _reclass(query, context, chat_key, data[len("reclass_"):])
+        elif data == "claim_income":
+            await _claim_income(query, context, chat_key)
+        elif data == "upgrade_prop":
+            await _upgrade_prop(query, context, chat_key)
         elif data == "link_stats":
             # Связка chat_instance ↔ chat_id уже выполнена в _chat_key выше
             await query.edit_message_text(
@@ -159,6 +180,8 @@ async def _run_command(query, context, chat_key, cmd):
         "inventory": lambda: cmd_inventory(chat_key, user),
         "boss": lambda: cmd_boss(chat_key, user),
         "dungeon": lambda: cmd_dungeon(chat_key, user),
+        "shop": lambda: cmd_shop(chat_key, user),
+        "farm": lambda: cmd_farm(chat_key, user),
         "top": lambda: cmd_top(chat_key),
         "weektop": lambda: cmd_weektop(chat_key),
         "dickofday": lambda: cmd_dickofday(chat_key),
@@ -684,6 +707,135 @@ async def _dungeon_leave(query, context, owner_id):
     if summary["level_up"] > 0:
         text += f"\n\n🎉 Новый уровень: <b>{summary['level']}</b>!"
     await query.edit_message_text(text, parse_mode=ParseMode.HTML)
+
+
+# --- Магазин ----------------------------------------------------------------
+
+def cmd_shop(chat_key, user):
+    player = character.get_or_create(user.id, user.username, user.first_name)
+    text = (
+        f"🏪 <b>Магазин</b>\n\n"
+        f"🪙 Баланс: <b>{int(player['coins'])}</b> монет\n\n"
+        f"<b>Сундуки</b> (случайный предмет, шанс редкого выше у дорогих):\n"
+    )
+    rows = []
+    for code, ch in config.SHOP_CHESTS.items():
+        text += f"{ch['emoji']} {ch['name']} — {ch['price']} монет\n"
+        rows.append([InlineKeyboardButton(
+            f"{ch['emoji']} {ch['name']} ({ch['price']})",
+            callback_data=f"buy_chest_{code}")])
+    rows.append([InlineKeyboardButton(
+        f"🔄 Сменить класс ({config.CLASS_CHANGE_COST})",
+        callback_data="shop_reclass")])
+    return text, InlineKeyboardMarkup(rows)
+
+
+async def _buy_chest(query, context, chat_key, chest_code):
+    result = economy.buy_chest(query.from_user.id, chest_code)
+    if result["status"] == "no_coins":
+        await query.answer(f"Нужно {result['need']} монет (у тебя {result['have']}).",
+                           show_alert=True)
+        return
+    if result["status"] != "ok":
+        return
+    await query.answer(f"🎁 Получено: {loot.item_label(result['item'])}",
+                       show_alert=True)
+    text, markup = cmd_shop(chat_key, query.from_user)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+
+
+async def _shop_reclass(query, context, chat_key):
+    user = query.from_user
+    player = database.get_or_create_player(user.id)
+    if player["coins"] < config.CLASS_CHANGE_COST:
+        await query.answer(
+            f"Нужно {config.CLASS_CHANGE_COST} монет (у тебя {int(player['coins'])}).",
+            show_alert=True)
+        return
+    rows = [
+        [InlineKeyboardButton(f"{cls['emoji']} {cls['name']}",
+                              callback_data=f"reclass_{user.id}_{code}")]
+        for code, cls in config.CLASSES.items()
+    ]
+    await query.edit_message_text(
+        f"🔄 <b>Смена класса</b> ({config.CLASS_CHANGE_COST} монет)\n\n"
+        f"Выбери новый класс:",
+        parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def _reclass(query, context, chat_key, payload):
+    owner_str, _, code = payload.partition("_")
+    try:
+        owner_id = int(owner_str)
+    except ValueError:
+        return
+    if query.from_user.id != owner_id:
+        await query.answer("Это не твой профиль!", show_alert=True)
+        return
+    result = economy.change_class(owner_id, code)
+    if result["status"] == "no_coins":
+        await query.answer(f"Нужно {result['need']} монет.", show_alert=True)
+        return
+    if result["status"] != "ok":
+        return
+    await query.answer(f"Класс изменён на {config.CLASSES[code]['name']}!",
+                       show_alert=True)
+    text, markup = cmd_shop(chat_key, query.from_user)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+
+
+# --- Ферма (пассивный доход) ------------------------------------------------
+
+def cmd_farm(chat_key, user):
+    player = character.get_or_create(user.id, user.username, user.first_name)
+    level = player["property_level"] or 0
+    prop = economy.property_at(level)
+    pending = economy.pending_income(player)
+
+    text = "🏡 <b>Ферма</b> (пассивный доход)\n\n"
+    if prop:
+        cap = prop["rate_per_hour"] * config.PROPERTY_CAP_HOURS
+        text += (f"{prop['emoji']} {prop['name']} (ур. {level}) — "
+                 f"{prop['rate_per_hour']} монет/час\n"
+                 f"🪙 Накоплено: <b>{pending}</b> / {cap}\n\n")
+    else:
+        text += "У тебя пока нет фермы — купи первую для пассивного дохода.\n\n"
+    text += f"Баланс: {int(player['coins'])} монет"
+
+    rows = []
+    if prop and pending > 0:
+        rows.append([InlineKeyboardButton(f"🪙 Собрать ({pending})",
+                                          callback_data="claim_income")])
+    nxt = economy.next_property(level)
+    if nxt:
+        verb = "Купить" if level == 0 else "Улучшить"
+        rows.append([InlineKeyboardButton(
+            f"⬆️ {verb}: {nxt['emoji']} {nxt['name']} ({nxt['upgrade_cost']})",
+            callback_data="upgrade_prop")])
+    return text, (InlineKeyboardMarkup(rows) if rows else None)
+
+
+async def _claim_income(query, context, chat_key):
+    amount = economy.claim_income(query.from_user.id)
+    await query.answer(f"🪙 Собрано: +{amount} монет" if amount
+                       else "Пока нечего собирать.", show_alert=True)
+    text, markup = cmd_farm(chat_key, query.from_user)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+
+
+async def _upgrade_prop(query, context, chat_key):
+    result = economy.upgrade_property(query.from_user.id)
+    if result["status"] == "no_coins":
+        await query.answer(f"Нужно {result['need']} монет (у тебя {result['have']}).",
+                           show_alert=True)
+        return
+    if result["status"] == "max":
+        await query.answer("Ферма уже максимального уровня!", show_alert=True)
+        return
+    await query.answer(f"🏡 {result['property']['name']} (ур. {result['level']})!",
+                       show_alert=True)
+    text, markup = cmd_farm(chat_key, query.from_user)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 
 def cmd_duel(chat_key, user):

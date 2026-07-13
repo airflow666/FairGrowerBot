@@ -138,6 +138,8 @@ def init_db():
                 level INTEGER DEFAULT 1,
                 klass TEXT,
                 coins INTEGER DEFAULT 0,
+                property_level INTEGER DEFAULT 0,
+                income_at TIMESTAMP,
                 username TEXT,
                 first_name TEXT,
                 created_at TIMESTAMP
@@ -219,6 +221,8 @@ def init_db():
         _ensure_column(conn, "dick_of_day", "chosen_date", "TEXT")
         _ensure_column(conn, "active_duels", "status", "TEXT DEFAULT 'active'")
         _ensure_column(conn, "active_duels", "inline_message_id", "TEXT")
+        _ensure_column(conn, "players", "property_level", "INTEGER DEFAULT 0")
+        _ensure_column(conn, "players", "income_at", "TIMESTAMP")
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_grow_history_chat "
@@ -694,6 +698,23 @@ def adjust_player_coins(user_id, delta):
             "SELECT coins FROM players WHERE user_id = ?", (user_id,)
         ).fetchone()
     return int(row["coins"]) if row else 0
+
+
+def set_income_at(user_id, ts):
+    """Обновить время последнего сбора пассивного дохода."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE players SET income_at = ? WHERE user_id = ?", (ts, user_id)
+        )
+
+
+def set_property_level(user_id, level, income_ts):
+    """Задать уровень фермы и сбросить таймер дохода."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE players SET property_level = ?, income_at = ? WHERE user_id = ?",
+            (level, income_ts, user_id),
+        )
 
 
 # --- Экспедиции -------------------------------------------------------------
