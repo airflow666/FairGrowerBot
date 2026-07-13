@@ -111,6 +111,25 @@ def init_db():
             )
         """)
 
+        # Чаты, куда добавлен бот (для проактивных постов и авто-событий)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS chats (
+                chat_id TEXT PRIMARY KEY,
+                title TEXT,
+                is_active INTEGER DEFAULT 1,
+                added_at TIMESTAMP
+            )
+        """)
+
+        # Связь inline-идентификатора чата (chat_instance) с реальным chat_id
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_links (
+                chat_instance TEXT PRIMARY KEY,
+                chat_id TEXT,
+                linked_at TIMESTAMP
+            )
+        """)
+
         # Миграции для БД, созданных прежними версиями бота
         _ensure_column(conn, "user_sizes", "max_size", "INTEGER DEFAULT 0")
         _ensure_column(conn, "user_sizes", "grow_streak", "INTEGER DEFAULT 0")
@@ -452,3 +471,81 @@ def get_achievements(user_id, chat_id):
             (user_id, chat_id),
         ).fetchall()
     return [r["code"] for r in rows]
+
+
+# --- Чаты и связка chat_instance ↔ chat_id ----------------------------------
+
+# Таблицы, где ключ чата нужно переносить при склейке
+_CHAT_KEYED_TABLES = (
+    "user_sizes", "dick_of_day", "duel_stats",
+    "active_duels", "grow_history", "achievements",
+)
+
+
+def record_chat(chat_id, title=None):
+    """Отметить, что бот сейчас состоит в чате (для проактивных постов)."""
+    with _connect() as conn:
+        conn.execute(
+            """INSERT INTO chats (chat_id, title, is_active, added_at)
+               VALUES (?, ?, 1, ?)
+               ON CONFLICT(chat_id) DO UPDATE
+                 SET is_active = 1, title = COALESCE(excluded.title, chats.title)""",
+            (str(chat_id), title, utils.now().isoformat()),
+        )
+
+
+def set_chat_active(chat_id, active):
+    """Пометить чат активным/неактивным (бота добавили/удалили)."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE chats SET is_active = ? WHERE chat_id = ?",
+            (1 if active else 0, str(chat_id)),
+        )
+
+
+def get_active_chats():
+    """Чаты, где бот сейчас состоит (для рассылки авто-событий)."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT chat_id, title FROM chats WHERE is_active = 1"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def link_chat_instance(chat_instance, chat_id):
+    """Связать inline-идентификатор чата с реальным chat_id и перенести данные.
+
+    Возвращает True, если связка новая (перенос выполнен), иначе False.
+    """
+    if not chat_instance:
+        return False
+    canonical = str(chat_id)
+    with _connect() as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM chat_links WHERE chat_instance = ?", (chat_instance,)
+        ).fetchone()
+        if exists:
+            return False
+        conn.execute(
+            "INSERT INTO chat_links (chat_instance, chat_id, linked_at) VALUES (?, ?, ?)",
+            (chat_instance, canonical, utils.now().isoformat()),
+        )
+        if chat_instance != canonical:
+            for table in _CHAT_KEYED_TABLES:
+                # OR IGNORE: если под chat_id уже есть строка с тем же PK — не рушимся
+                conn.execute(
+                    f"UPDATE OR IGNORE {table} SET chat_id = ? WHERE chat_id = ?",
+                    (canonical, chat_instance),
+                )
+    return True
+
+
+def resolve_chat_key(chat_instance):
+    """Канонический ключ чата: связанный chat_id (строкой) либо сам chat_instance."""
+    if chat_instance is None:
+        return None
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT chat_id FROM chat_links WHERE chat_instance = ?", (chat_instance,)
+        ).fetchone()
+    return row["chat_id"] if row else str(chat_instance)

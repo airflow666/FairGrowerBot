@@ -41,10 +41,19 @@ MENU = [
 # --- Инфраструктура ---------------------------------------------------------
 
 def _chat_key(query):
-    """Идентификатор чата из callback-запроса."""
+    """Канонический идентификатор чата из callback-запроса.
+
+    Для кнопки под обычным сообщением в группе доступны и ``chat.id``, и
+    ``chat_instance`` — пользуемся моментом и связываем их (перенос старой
+    inline-статистики на реальный chat_id). Для inline-сообщения канонический
+    ключ достаём из ранее сохранённой связки.
+    """
     if query.message and query.message.chat:
-        return query.message.chat.id
-    return query.chat_instance
+        chat_id = query.message.chat.id
+        if query.chat_instance:
+            database.link_chat_instance(query.chat_instance, chat_id)
+        return str(chat_id)
+    return database.resolve_chat_key(query.chat_instance)
 
 
 def _achievement_suffix(user_id, chat_key, candidate_codes):
@@ -101,6 +110,15 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _accept_duel(query, context, chat_key, int(data.rsplit("_", 1)[1]))
         elif data.startswith("casino_"):
             await _play_casino(query, context, chat_key, int(data.rsplit("_", 1)[1]))
+        elif data == "link_stats":
+            # Связка chat_instance ↔ chat_id уже выполнена в _chat_key выше
+            await query.edit_message_text(
+                "✅ <b>Чат активирован!</b>\n\n"
+                "Команды теперь работают и в группе (/grow, /top, /duel, /casino, "
+                "/stats), а «писюн дня» будет выбираться автоматически в полночь. "
+                "Старая статистика подключена.",
+                parse_mode=ParseMode.HTML,
+            )
     except Exception:  # noqa: BLE001 — не роняем event loop из-за одной кнопки
         logger.exception("Ошибка обработки кнопки %r (user=%s)", data, user.id)
         try:
