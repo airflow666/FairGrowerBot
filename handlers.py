@@ -159,6 +159,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _equip_item(query, context, chat_key, int(data.rsplit("_", 1)[1]))
         elif data == "boss_hit":
             await _boss_hit(query, context, chat_key)
+        elif data.startswith("boss_hit_"):
+            await _boss_hit(query, context, chat_key,
+                            owner_id=int(data.rsplit("_", 1)[1]))
         elif data == "dng_enter":
             await _dungeon_enter(query, context, chat_key)
         elif data.startswith("dng_deep_"):
@@ -470,7 +473,8 @@ async def _set_class(query, context, chat_key, payload):
     if not character.set_class(owner_id, code):
         return
     text, markup = cmd_profile(chat_key, query.from_user)
-    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                  reply_markup=_with_back(markup, owner_id))
 
 
 # --- Экспедиции -------------------------------------------------------------
@@ -530,6 +534,7 @@ async def _start_expedition(query, context, chat_key, zone_code):
         f"{zone['emoji']} {zone['name']}\n"
         f"⏳ Вернётся через {_format_duration(zone['duration'])}",
         parse_mode=ParseMode.HTML,
+        reply_markup=_with_back(None, user.id),
     )
     _schedule_expedition_return(context, chat_key, zone["duration"])
 
@@ -553,7 +558,8 @@ async def _claim_expedition(query, context, chat_key):
         await _answer(query, "Награда уже забрана или экспедиция ещё идёт.",
                            alert=True)
         return
-    await query.edit_message_text(_reward_text(reward), parse_mode=ParseMode.HTML)
+    await query.edit_message_text(_reward_text(reward), parse_mode=ParseMode.HTML,
+                                  reply_markup=_with_back(None, query.from_user.id))
 
 
 def _is_postable_chat(chat_key):
@@ -629,13 +635,19 @@ async def _equip_item(query, context, chat_key, item_id):
         await _answer(query, "Это не твой предмет.", alert=True)
         return
     text, markup = cmd_inventory(chat_key, user)
-    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                  reply_markup=_with_back(markup, user.id))
 
 
 # --- Боссы ------------------------------------------------------------------
 
-def boss_message(active_boss):
-    """Карточка босса с полосой HP и кнопкой удара."""
+def boss_message(active_boss, owner_id=None):
+    """Карточка босса с полосой HP и кнопкой удара.
+
+    ``owner_id`` задаётся, когда карточка живёт в чьём-то меню: тогда после
+    удара сохранится кнопка «⬅️ Меню». Общая карточка в чате (авто-спавн) —
+    без владельца, чтобы никто не мог «увести» её в своё меню.
+    """
     hp = max(0, int(active_boss["hp"]))
     bar = _progress_bar(hp, active_boss["max_hp"])
     text = (
@@ -643,15 +655,16 @@ def boss_message(active_boss):
         f"❤️ HP: {bar}  {hp}/{active_boss['max_hp']}\n\n"
         f"Бейте босса вместе! Награда — по вкладу урона."
     )
+    hit_data = f"boss_hit_{owner_id}" if owner_id else "boss_hit"
     markup = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("⚔️ Ударить", callback_data="boss_hit")]]
+        [[InlineKeyboardButton("⚔️ Ударить", callback_data=hit_data)]]
     )
     return text, markup
 
 
 def cmd_boss(chat_key, user):
     active, _is_new = boss.summon(chat_key)
-    return boss_message(active)
+    return boss_message(active, owner_id=user.id)
 
 
 def _boss_defeat_text(result):
@@ -669,7 +682,7 @@ def _boss_defeat_text(result):
     return "\n".join(lines)
 
 
-async def _boss_hit(query, context, chat_key):
+async def _boss_hit(query, context, chat_key, owner_id=None):
     result = boss.hit(query.from_user.id, chat_key)
     status = result["status"]
 
@@ -682,13 +695,16 @@ async def _boss_hit(query, context, chat_key):
         await _answer(query, f"⚔️ Урон: {result['damage']}")
         updated = dict(result["boss"])
         updated["hp"] = result["hp"]
-        text, markup = boss_message(updated)
+        text, markup = boss_message(updated, owner_id=owner_id)
+        if owner_id:
+            markup = _with_back(markup, owner_id)
         await query.edit_message_text(text, parse_mode=ParseMode.HTML,
                                       reply_markup=markup)
     elif status == "killed":
         await _answer(query, "💥 БОСС ПОВЕРЖЕН!")
-        await query.edit_message_text(_boss_defeat_text(result),
-                                      parse_mode=ParseMode.HTML)
+        await query.edit_message_text(
+            _boss_defeat_text(result), parse_mode=ParseMode.HTML,
+            reply_markup=_with_back(None, owner_id) if owner_id else None)
 
 
 # --- Подземелья -------------------------------------------------------------
@@ -744,7 +760,8 @@ async def _dungeon_enter(query, context, chat_key):
         )
         return
     text, markup = _dungeon_room_message(result["run"], user.id)
-    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                  reply_markup=_with_back(markup, user.id))
 
 
 async def _dungeon_deeper(query, context, owner_id):
@@ -764,6 +781,7 @@ async def _dungeon_deeper(query, context, owner_id):
             f"Ловушка нанесла {result['damage']} урона.\n"
             f"Вся добыча и плата за вход потеряны. 🪦",
             parse_mode=ParseMode.HTML,
+            reply_markup=_with_back(None, owner_id),
         )
         return
     run = database.get_active_dungeon_run(user.id)
@@ -772,7 +790,8 @@ async def _dungeon_deeper(query, context, owner_id):
         await _answer(query, f"🪤 Ловушка! -{result['damage']} HP")
     else:
         await _answer(query, f"📦 Сундук! +{result['gain']} монет")
-    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                  reply_markup=_with_back(markup, owner_id))
 
 
 async def _dungeon_leave(query, context, owner_id):
@@ -792,7 +811,8 @@ async def _dungeon_leave(query, context, owner_id):
     )
     if summary["level_up"] > 0:
         text += f"\n\n🎉 Новый уровень: <b>{summary['level']}</b>!"
-    await query.edit_message_text(text, parse_mode=ParseMode.HTML)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                  reply_markup=_with_back(None, owner_id))
 
 
 # --- Магазин ----------------------------------------------------------------
@@ -827,7 +847,8 @@ async def _buy_chest(query, context, chat_key, chest_code):
     await _answer(query, f"🎁 Получено: {loot.item_label(result['item'])}",
                        alert=True)
     text, markup = cmd_shop(chat_key, query.from_user)
-    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                  reply_markup=_with_back(markup, query.from_user.id))
 
 
 async def _shop_reclass(query, context, chat_key):
@@ -846,7 +867,8 @@ async def _shop_reclass(query, context, chat_key):
     await query.edit_message_text(
         f"🔄 <b>Смена класса</b> ({config.CLASS_CHANGE_COST} монет)\n\n"
         f"Выбери новый класс:",
-        parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(rows))
+        parse_mode=ParseMode.HTML,
+        reply_markup=_with_back(InlineKeyboardMarkup(rows), user.id))
 
 
 async def _reclass(query, context, chat_key, payload):
@@ -867,7 +889,8 @@ async def _reclass(query, context, chat_key, payload):
     await _answer(query, f"Класс изменён на {config.CLASSES[code]['name']}!",
                        alert=True)
     text, markup = cmd_shop(chat_key, query.from_user)
-    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                  reply_markup=_with_back(markup, owner_id))
 
 
 # --- Ферма (пассивный доход) ------------------------------------------------
@@ -906,7 +929,8 @@ async def _claim_income(query, context, chat_key):
     await _answer(query, f"🪙 Собрано: +{amount} монет" if amount
                        else "Пока нечего собирать.", alert=True)
     text, markup = cmd_farm(chat_key, query.from_user)
-    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                  reply_markup=_with_back(markup, query.from_user.id))
 
 
 async def _upgrade_prop(query, context, chat_key):
@@ -921,7 +945,8 @@ async def _upgrade_prop(query, context, chat_key):
     await _answer(query, f"🏡 {result['property']['name']} (ур. {result['level']})!",
                        alert=True)
     text, markup = cmd_farm(chat_key, query.from_user)
-    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                  reply_markup=_with_back(markup, query.from_user.id))
 
 
 def cmd_duel(chat_key, user):
@@ -984,7 +1009,8 @@ async def _create_duel(query, context, chat_key, bet):
     size = database.get_user_size(user.id, chat_key)
     if bet > size:
         await query.edit_message_text(
-            f"⚠️ Твоя пипися всего {size} см.\nСтавка больше твоего размера!"
+            f"⚠️ Твоя пипися всего {size} см.\nСтавка больше твоего размера!",
+            reply_markup=_with_back(None, user.id),
         )
         return
 

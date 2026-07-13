@@ -50,6 +50,11 @@ CI: `.github/workflows/ci.yml` (ruff + pytest). Деплой: `deploy/upgrade.sh
 - **Владелец меню**: кнопки с данными игрока зашивают owner_id в callback_data
   (`nav_{owner}_{screen}`, `setclass_{owner}_{code}`, `dng_deep_{owner}`,
   `reclass_{owner}_{code}`); чужое нажатие → попап-отказ.
+- **«⬅️ Меню» после действий**: ЛЮБОЙ edit персонального экрана (результат
+  экспедиции, комната/смерть подземелья, перерисовка магазина/фермы/инвентаря)
+  обязан приложить `_with_back(markup, user_id)` — иначе игрок в тупике.
+  Исключение — ОБЩИЕ артефакты (вызов/результат дуэли, авто-карточка босса,
+  `link_stats`): туда back не ставить, чтобы один игрок не «увёл» общий экран.
 
 ## Единое меню (антифлуд-UX)
 - Инлайн `@bot` → одна статья «🎮 Меню» → кнопка `open_menu` (первый нажавший —
@@ -72,7 +77,7 @@ CI: `.github/workflows/ci.yml` (ruff + pytest). Деплой: `deploy/upgrade.sh
 | `start_exp_{zone}` | `_start_expedition` | + job возврата, если чат активный |
 | `claim_exp` | `_claim_expedition` | по user_id нажавшего |
 | `equip_{item_id}` | `_equip_item` | ownership проверяется в SQL |
-| `boss_hit` | `_boss_hit` | по user_id нажавшего, кулдаун в boss_hits |
+| `boss_hit` / `boss_hit_{owner}` | `_boss_hit` | удар по user_id нажавшего; вариант с owner — карточка в чьём-то меню (сохраняет «⬅️ Меню» при перерисовке), без owner — общая карточка чата (авто-спавн) |
 | `dng_enter` / `dng_deep_{owner}` / `dng_leave_{owner}` | `_dungeon_*` | push-your-luck |
 | `buy_chest_{code}` / `shop_reclass` / `reclass_{owner}_{code}` | `_buy_chest`/`_shop_reclass`/`_reclass` | магазин |
 | `claim_income` / `upgrade_prop` | `_claim_income`/`_upgrade_prop` | ферма |
