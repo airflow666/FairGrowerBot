@@ -129,3 +129,46 @@ def test_achievements_unlock_once(db):
     assert db.unlock_achievement(1, "c", "first_grow") is True
     assert db.unlock_achievement(1, "c", "first_grow") is False
     assert db.get_achievements(1, "c") == ["first_grow"]
+
+
+def test_record_and_active_chats(db):
+    db.record_chat(-100500, "My Group")
+    assert [c["chat_id"] for c in db.get_active_chats()] == ["-100500"]
+    db.set_chat_active(-100500, False)
+    assert db.get_active_chats() == []
+    # Повторное добавление снова активирует
+    db.record_chat(-100500, "My Group")
+    assert len(db.get_active_chats()) == 1
+
+
+def test_link_migrates_inline_data_to_chat_id(db):
+    # Данные наиграны в inline-режиме под chat_instance
+    inst = "8888888888888888888"
+    db.apply_grow(1, inst, 20, "a", "A")
+    db.apply_grow(2, inst, 5, "b", "B")
+    assert db.get_user_size(1, inst) == 20
+
+    # Бот добавлен в группу → узнали реальный chat_id → склейка
+    assert db.link_chat_instance(inst, -100500) is True
+    # Повторная склейка ничего не делает
+    assert db.link_chat_instance(inst, -100500) is False
+
+    # Данные переехали на канонический ключ (str(chat_id))
+    assert db.get_user_size(1, inst) == 0          # под старым ключом пусто
+    assert db.get_user_size(1, "-100500") == 20    # под новым — на месте
+    assert db.resolve_chat_key(inst) == "-100500"
+
+
+def test_resolve_unlinked_returns_instance(db):
+    assert db.resolve_chat_key("someinstance") == "someinstance"
+    assert db.resolve_chat_key(None) is None
+
+
+def test_link_survives_pk_conflict(db):
+    # И под chat_instance, и под chat_id уже есть строка одного пользователя
+    inst = "777"
+    db.apply_grow(1, inst, 20, "a", "A")
+    db.apply_grow(1, "-42", 3, "a", "A")
+    # Склейка не должна падать (OR IGNORE), данные под chat_id сохраняются
+    assert db.link_chat_instance(inst, -42) is True
+    assert db.get_user_size(1, "-42") == 3
