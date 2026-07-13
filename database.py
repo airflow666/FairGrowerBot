@@ -207,6 +207,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS dungeon_runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
+                dungeon TEXT,
                 depth INTEGER DEFAULT 0,
                 hp INTEGER,
                 max_hp INTEGER,
@@ -227,6 +228,7 @@ def init_db():
         _ensure_column(conn, "players", "property_level", "INTEGER DEFAULT 0")
         _ensure_column(conn, "players", "income_at", "TIMESTAMP")
         _ensure_column(conn, "player_items", "stats", "TEXT")
+        _ensure_column(conn, "dungeon_runs", "dungeon", "TEXT")
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_grow_history_chat "
@@ -1011,13 +1013,14 @@ def get_active_dungeon_run(user_id):
     return dict(row) if row else None
 
 
-def create_dungeon_run(user_id, max_hp):
+def create_dungeon_run(user_id, dungeon, max_hp):
     """Начать забег по подземелью, вернуть его id."""
     with _connect() as conn:
         cur = conn.execute(
-            """INSERT INTO dungeon_runs (user_id, depth, hp, max_hp, status, created_at)
-               VALUES (?, 0, ?, ?, 'active', ?)""",
-            (user_id, max_hp, max_hp, utils.now().isoformat()),
+            """INSERT INTO dungeon_runs
+                   (user_id, dungeon, depth, hp, max_hp, status, created_at)
+               VALUES (?, ?, 0, ?, ?, 'active', ?)""",
+            (user_id, dungeon, max_hp, max_hp, utils.now().isoformat()),
         )
         return cur.lastrowid
 

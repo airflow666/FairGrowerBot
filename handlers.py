@@ -163,8 +163,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data.startswith("boss_hit_"):
             await _boss_hit(query, context, chat_key,
                             owner_id=int(data.rsplit("_", 1)[1]))
-        elif data == "dng_enter":
-            await _dungeon_enter(query, context, chat_key)
+        elif data.startswith("dng_enter_"):
+            await _dungeon_enter(query, context, chat_key, data[len("dng_enter_"):])
         elif data.startswith("dng_deep_"):
             await _dungeon_deeper(query, context, int(data.rsplit("_", 1)[1]))
         elif data.startswith("dng_leave_"):
@@ -797,12 +797,16 @@ async def _boss_hit(query, context, chat_key, owner_id=None):
 # --- Подземелья -------------------------------------------------------------
 
 def _dungeon_room_message(run, owner_id):
+    d = dungeon.get_dungeon(run["dungeon"]) or {"emoji": "🏰", "name": "Подземелье"}
     hp = max(0, int(run["hp"]))
     bar = _progress_bar(hp, run["max_hp"])
+    risk = int(dungeon.trap_chance(dungeon.get_dungeon(run["dungeon"])
+               or next(iter(config.DUNGEONS.values())), run["depth"] + 1) * 100)
     text = (
-        f"🏰 <b>Подземелье — глубина {run['depth']}</b>\n\n"
+        f"{d['emoji']} <b>{d['name']} — глубина {run['depth']}</b>\n\n"
         f"❤️ HP: {bar}  {hp}/{run['max_hp']}\n"
-        f"🪙 Накоплено: {run['coins_earned']}  📦 Сундуков: {run['treasures']}\n\n"
+        f"🪙 Накоплено: {run['coins_earned']}  🎁 Добыча: {run['treasures']}\n"
+        f"⚠️ Риск ловушки дальше: ~{risk}%\n\n"
         f"Идти глубже или уйти с добычей?"
     )
     markup = InlineKeyboardMarkup([[
@@ -813,38 +817,43 @@ def _dungeon_room_message(run, owner_id):
 
 
 def cmd_dungeon(chat_key, user):
-    character.get_or_create(user.id, user.username, user.first_name)
+    player = character.get_or_create(user.id, user.username, user.first_name)
     run = database.get_active_dungeon_run(user.id)
     if run:
         return _dungeon_room_message(run, user.id)
 
-    player = database.get_or_create_player(user.id)
-    cost = config.DUNGEON_ENTRY_COST
     text = (
-        f"🏰 <b>Подземелье</b>\n\n"
-        f"Спускайся вглубь за сокровищами, но берегись ловушек!\n"
-        f"Уйти с добычей можно в любой момент — или потерять всё.\n\n"
-        f"💰 Вход: {cost} монет (у тебя {int(player['coins'])})"
+        "🏰 <b>Подземелья</b>\n\n"
+        "Спускайся вглубь за монетами и добычей, но риск ловушки растёт с "
+        "глубиной. Уйти с добычей можно в любой момент — или погибнуть и "
+        f"потерять всё.\n\n🪙 Баланс: {int(player['coins'])} монет\n\n"
     )
-    if player["coins"] >= cost:
-        markup = InlineKeyboardMarkup(
-            [[InlineKeyboardButton(f"🏰 Войти ({cost} монет)",
-                                   callback_data="dng_enter")]]
-        )
-    else:
-        text += "\n\n😔 Не хватает монет — сходи в экспедицию или победи босса."
-        markup = None
-    return text, markup
+    rows = []
+    for code, d, unlocked in dungeon.available_dungeons(player["level"]):
+        if unlocked:
+            text += (f"{d['emoji']} <b>{d['name']}</b> — вход {d['entry_cost']} 🪙, "
+                     f"с ур. {d['min_level']}\n")
+            rows.append([InlineKeyboardButton(
+                f"{d['emoji']} {d['name']} ({d['entry_cost']} 🪙)",
+                callback_data=f"dng_enter_{code}")])
+        else:
+            text += f"🔒 {d['emoji']} {d['name']} — нужен уровень {d['min_level']}\n"
+    return text, (InlineKeyboardMarkup(rows) if rows else None)
 
 
-async def _dungeon_enter(query, context, chat_key):
+async def _dungeon_enter(query, context, chat_key, dungeon_code):
     user = query.from_user
-    result = dungeon.enter(user.id)
+    result = dungeon.enter(user.id, dungeon_code)
+    if result["status"] == "low_level":
+        await _answer(query, f"Нужен уровень {result['need']} для этого подземелья.",
+                      alert=True)
+        return
     if result["status"] == "no_coins":
-        await _answer(query,
-            f"Нужно {result['need']} монет (у тебя {result['have']}).",
-            alert=True,
-        )
+        await _answer(query, f"Нужно {result['need']} монет (у тебя {result['have']}).",
+                      alert=True)
+        return
+    if result["status"] not in ("entered", "in_run"):
+        await _answer(query, "Не удалось войти.", alert=True)
         return
     text, markup = _dungeon_room_message(result["run"], user.id)
     await query.edit_message_text(text, parse_mode=ParseMode.HTML,
@@ -875,8 +884,10 @@ async def _dungeon_deeper(query, context, owner_id):
     text, markup = _dungeon_room_message(run, owner_id)
     if status == "trap":
         await _answer(query, f"🪤 Ловушка! -{result['damage']} HP")
+    elif result.get("found_item"):
+        await _answer(query, f"🎁 Комната с добычей! +{result['gain']} монет")
     else:
-        await _answer(query, f"📦 Сундук! +{result['gain']} монет")
+        await _answer(query, f"🪙 Пустая комната. +{result['gain']} монет")
     await query.edit_message_text(text, parse_mode=ParseMode.HTML,
                                   reply_markup=_with_back(markup, owner_id))
 
