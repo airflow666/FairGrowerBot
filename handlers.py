@@ -20,6 +20,7 @@ from telegram.ext import ContextTypes
 
 import config
 import database
+from game import character, classes, leveling
 from utils import format_mention
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ THUMB_URL = "https://img.icons8.com/emoji/48/000000/eggplant-emoji.png"
 # Пункты меню inline-режима: (id, заголовок, описание)
 MENU = [
     ("grow", "📈 Grow", "Увеличить пиписю"),
+    ("profile", "👤 Профиль", "Персонаж, класс, уровень"),
     ("top", "🏆 Top", "Топ участников"),
     ("weektop", "📅 Топ недели", "Прирост за 7 дней"),
     ("dickofday", "🎉 Dick Of Day", "Писюн дня"),
@@ -110,6 +112,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _accept_duel(query, context, chat_key, int(data.rsplit("_", 1)[1]))
         elif data.startswith("casino_"):
             await _play_casino(query, context, chat_key, int(data.rsplit("_", 1)[1]))
+        elif data.startswith("setclass_"):
+            await _set_class(query, context, chat_key, data[len("setclass_"):])
         elif data == "link_stats":
             # Связка chat_instance ↔ chat_id уже выполнена в _chat_key выше
             await query.edit_message_text(
@@ -132,6 +136,7 @@ async def _run_command(query, context, chat_key, cmd):
     user = query.from_user
     handlers = {
         "grow": lambda: cmd_grow(chat_key, user),
+        "profile": lambda: cmd_profile(chat_key, user),
         "top": lambda: cmd_top(chat_key),
         "weektop": lambda: cmd_weektop(chat_key),
         "dickofday": lambda: cmd_dickofday(chat_key),
@@ -189,6 +194,12 @@ def cmd_grow(chat_key, user):
     if result["streak"] >= 7:
         codes.append("streak_7")
     text += _achievement_suffix(user.id, chat_key, codes)
+
+    exp = character.grant_exp(user.id, config.EXP_PER_GROW,
+                              user.username, user.first_name)
+    text += f"\n✨ +{exp['gained']} XP"
+    if exp["level_up"] > 0:
+        text += f"\n🎉 Новый уровень: <b>{exp['level']}</b>!"
     return text
 
 
@@ -269,6 +280,66 @@ def cmd_stats(chat_key, user):
         f"🏅 Достижений: {len(achievements)}/{len(config.ACHIEVEMENTS)}"
     )
     return text
+
+
+def _progress_bar(cur, total, width=10):
+    if total <= 0:
+        return "▰" * width
+    filled = max(0, min(width, round(width * cur / total)))
+    return "▰" * filled + "▱" * (width - filled)
+
+
+def _class_keyboard(owner_id):
+    rows = [
+        [InlineKeyboardButton(f"{cls['emoji']} {cls['name']} — {cls['perk']}",
+                              callback_data=f"setclass_{owner_id}_{code}")]
+        for code, cls in config.CLASSES.items()
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def cmd_profile(chat_key, user):
+    player = character.get_or_create(user.id, user.username, user.first_name)
+    level, into, need = leveling.progress(player["exp"])
+    stats = classes.stats_for(level, player["klass"])
+    name = format_mention(user.id, user.username, user.first_name)
+    size = database.get_user_size(user.id, chat_key)
+
+    stat_line = "  ".join(
+        f"{config.STATS[s][0]} {config.STATS[s][1]} {stats[s]}" for s in config.STATS
+    )
+    text = (
+        f"👤 <b>Профиль</b> {name}\n\n"
+        f"🎖️ Класс: {classes.class_name(player['klass'])}\n"
+        f"⭐ Уровень {level}  {_progress_bar(into, need)}  {into}/{need} XP\n"
+        f"{stat_line}\n"
+        f"🪙 Монеты: {int(player['coins'])}\n"
+        f"📏 Размер в этом чате: {size} см"
+    )
+    markup = None
+    if not player["klass"]:
+        text += "\n\n<b>Выбери класс</b> (влияет на распределение характеристик):"
+        markup = _class_keyboard(user.id)
+    return text, markup
+
+
+async def _set_class(query, context, chat_key, payload):
+    """Выбор класса персонажа (только владельцем профиля)."""
+    owner_str, _, code = payload.partition("_")
+    try:
+        owner_id = int(owner_str)
+    except ValueError:
+        return
+    if query.from_user.id != owner_id:
+        await query.answer("Это не твой профиль!", show_alert=True)
+        return
+    if character.get_or_create(owner_id)["klass"]:
+        await query.answer("Класс уже выбран.", show_alert=True)
+        return
+    if not character.set_class(owner_id, code):
+        return
+    text, markup = cmd_profile(chat_key, query.from_user)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 
 def cmd_duel(chat_key, user):
@@ -413,9 +484,13 @@ async def _accept_duel(query, context, chat_key, duel_id):
 
     _cancel_duel_timeout(context, duel_id)
 
-    winner_id, loser_id = database.resolve_duel(challenger_id, accepter.id, chat_key, bet)
+    win_chance = character.duel_win_chance(challenger_id, accepter.id)
+    winner_id, loser_id = database.resolve_duel(challenger_id, accepter.id, chat_key,
+                                                bet, win_chance)
     database.get_or_create_user(accepter.id, chat_key, accepter.username,
                                 accepter.first_name)
+    character.grant_exp(winner_id, config.EXP_PER_DUEL_WIN)
+    character.grant_exp(loser_id, config.EXP_PER_DUEL_LOSS)
 
     challenger = database.get_or_create_user(challenger_id, chat_key)
     challenger_name = format_mention(challenger_id, challenger["username"],
@@ -429,7 +504,9 @@ async def _accept_duel(query, context, chat_key, duel_id):
         f"{challenger_name} VS {accepter_name}\n"
         f"💰 Ставка: {bet} см\n\n"
         f"🏆 Победитель: {winner_name}! (+{bet} см)\n"
-        f"💀 Проигравший: {loser_name}! (-{bet} см)"
+        f"💀 Проигравший: {loser_name}! (-{bet} см)\n\n"
+        f"✨ +{config.EXP_PER_DUEL_WIN} XP победителю, "
+        f"+{config.EXP_PER_DUEL_LOSS} XP проигравшему"
     )
 
     wins = database.get_duel_stats(winner_id, chat_key)["wins"]

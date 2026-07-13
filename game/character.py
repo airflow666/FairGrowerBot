@@ -1,0 +1,50 @@
+"""Операции над персонажем: опыт, класс, характеристики, шансы дуэли."""
+import config
+import database
+from game import classes, leveling
+
+
+def get_or_create(user_id, username=None, first_name=None) -> dict:
+    """Получить (или создать) глобального персонажа игрока."""
+    return database.get_or_create_player(user_id, username, first_name)
+
+
+def grant_exp(user_id, amount, username=None, first_name=None) -> dict:
+    """Начислить опыт. Возвращает информацию о начислении и повышении уровня."""
+    player = database.get_or_create_player(user_id, username, first_name)
+    old_level = player["level"]
+    new_exp = player["exp"] + amount
+    new_level = leveling.level_for_exp(new_exp)
+    database.update_player_progress(user_id, new_exp, new_level)
+    return {
+        "gained": amount,
+        "level": new_level,
+        "level_up": new_level - old_level,
+    }
+
+
+def set_class(user_id, klass) -> bool:
+    """Задать класс персонажу. True при успехе (класс существует)."""
+    if klass not in config.CLASSES:
+        return False
+    database.get_or_create_player(user_id)
+    database.set_player_class(user_id, klass)
+    return True
+
+
+def effective_stats(player: dict) -> dict:
+    """Характеристики персонажа по его уровню и классу."""
+    return classes.stats_for(player["level"], player["klass"])
+
+
+def _combat_power(player: dict) -> int:
+    """Боевая мощь для дуэлей: Сила + уровень."""
+    return effective_stats(player)["strength"] + player["level"]
+
+
+def duel_win_chance(challenger_id, accepter_id) -> float:
+    """Шанс победы вызвавшего дуэль, с учётом статов и ограничением коридором."""
+    a = database.get_or_create_player(challenger_id)
+    b = database.get_or_create_player(accepter_id)
+    chance = 0.5 + config.DUEL_CHANCE_PER_POWER * (_combat_power(a) - _combat_power(b))
+    return max(config.DUEL_CHANCE_MIN, min(config.DUEL_CHANCE_MAX, chance))

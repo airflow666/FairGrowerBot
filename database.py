@@ -130,6 +130,20 @@ def init_db():
             )
         """)
 
+        # Глобальный RPG-персонаж (один на аккаунт, ключ — user_id)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS players (
+                user_id INTEGER PRIMARY KEY,
+                exp INTEGER DEFAULT 0,
+                level INTEGER DEFAULT 1,
+                klass TEXT,
+                coins INTEGER DEFAULT 0,
+                username TEXT,
+                first_name TEXT,
+                created_at TIMESTAMP
+            )
+        """)
+
         # Миграции для БД, созданных прежними версиями бота
         _ensure_column(conn, "user_sizes", "max_size", "INTEGER DEFAULT 0")
         _ensure_column(conn, "user_sizes", "grow_streak", "INTEGER DEFAULT 0")
@@ -398,10 +412,15 @@ def expire_duel(duel_id):
         return cur.rowcount > 0
 
 
-def resolve_duel(challenger_id, accepter_id, chat_id, bet):
-    """Начислить/списать ставку и обновить статистику победителя и проигравшего."""
-    winner_id = random.choice([challenger_id, accepter_id])
-    loser_id = accepter_id if winner_id == challenger_id else challenger_id
+def resolve_duel(challenger_id, accepter_id, chat_id, bet, challenger_win_chance=0.5):
+    """Начислить/списать ставку и обновить статистику победителя и проигравшего.
+
+    ``challenger_win_chance`` — шанс победы вызвавшего дуэль (по умолчанию 50/50).
+    """
+    if random.random() < challenger_win_chance:
+        winner_id, loser_id = challenger_id, accepter_id
+    else:
+        winner_id, loser_id = accepter_id, challenger_id
 
     with _connect() as conn:
         adjust_size(conn, winner_id, chat_id, bet)
@@ -549,3 +568,61 @@ def resolve_chat_key(chat_instance):
             "SELECT chat_id FROM chat_links WHERE chat_instance = ?", (chat_instance,)
         ).fetchone()
     return row["chat_id"] if row else str(chat_instance)
+
+
+# --- RPG-персонаж (глобальный, ключ — user_id) ------------------------------
+
+def get_or_create_player(user_id, username=None, first_name=None):
+    """Получить или создать глобального персонажа; обновить имя/username."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM players WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                """INSERT INTO players (user_id, username, first_name, created_at)
+                   VALUES (?, ?, ?, ?)""",
+                (user_id, username, first_name, utils.now().isoformat()),
+            )
+        elif username is not None or first_name is not None:
+            conn.execute(
+                """UPDATE players
+                   SET username = COALESCE(?, username),
+                       first_name = COALESCE(?, first_name)
+                   WHERE user_id = ?""",
+                (username, first_name, user_id),
+            )
+        row = conn.execute(
+            "SELECT * FROM players WHERE user_id = ?", (user_id,)
+        ).fetchone()
+    return dict(row)
+
+
+def update_player_progress(user_id, exp, level):
+    """Сохранить опыт и уровень персонажа."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE players SET exp = ?, level = ? WHERE user_id = ?",
+            (exp, level, user_id),
+        )
+
+
+def set_player_class(user_id, klass):
+    """Задать класс персонажа."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE players SET klass = ? WHERE user_id = ?", (klass, user_id)
+        )
+
+
+def adjust_player_coins(user_id, delta):
+    """Изменить баланс монет персонажа, вернуть новый баланс."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE players SET coins = coins + ? WHERE user_id = ?",
+            (delta, user_id),
+        )
+        row = conn.execute(
+            "SELECT coins FROM players WHERE user_id = ?", (user_id,)
+        ).fetchone()
+    return int(row["coins"]) if row else 0
