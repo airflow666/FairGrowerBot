@@ -1,0 +1,98 @@
+"""Тесты боя с боссом: спавн, урон, кулдаун, победа и раздача наград."""
+import importlib
+import random
+
+import pytest
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "boss.db"))
+    import config
+    importlib.reload(config)
+    import database
+    importlib.reload(database)
+    import utils
+    importlib.reload(utils)
+    from game import boss, character, classes, leveling, loot
+    for m in (leveling, classes, loot, character, boss):
+        importlib.reload(m)
+    database.init_db()
+    return {"config": config, "database": database, "utils": utils,
+            "boss": boss, "character": character}
+
+
+def test_summon_is_singleton(env):
+    boss = env["boss"]
+    b1, new1 = boss.summon("chatA")
+    assert new1 is True
+    b2, new2 = boss.summon("chatA")
+    assert new2 is False and b2["id"] == b1["id"]  # тот же босс
+
+
+def test_hit_reduces_hp_and_tracks_damage(env):
+    boss, db = env["boss"], env["database"]
+    boss.summon("chatA")
+    r = boss.hit(1, "chatA", rng=random.Random(1))
+    assert r["status"] == "hit"
+    assert r["hp"] < r["max_hp"]
+    contrib = db.get_boss_contributors(db.get_active_boss("chatA")["id"])
+    assert contrib[0]["user_id"] == 1 and contrib[0]["damage"] > 0
+
+
+def test_cooldown_blocks_second_hit(env):
+    boss = env["boss"]
+    boss.summon("chatA")
+    assert boss.hit(1, "chatA")["status"] == "hit"
+    assert boss.hit(1, "chatA")["status"] == "cooldown"
+
+
+def test_cooldown_expires(env, monkeypatch):
+    boss, utils, config = env["boss"], env["utils"], env["config"]
+    boss.summon("chatA")
+    boss.hit(1, "chatA")
+    from datetime import timedelta
+    real = utils.now()
+    monkeypatch.setattr(utils, "now",
+                        lambda: real + timedelta(seconds=config.BOSS_HIT_COOLDOWN + 1))
+    assert boss.hit(1, "chatA")["status"] == "hit"
+
+
+def test_kill_distributes_rewards(env, monkeypatch):
+    boss, db, config = env["boss"], env["database"], env["config"]
+    # Слабый босс, чтобы добить за пару ударов
+    monkeypatch.setattr(config, "BOSS_TEMPLATES", [{"emoji": "👹", "name": "Слизень", "hp": 1}])
+    boss.summon("chatA")
+    result = boss.hit(1, "chatA", rng=random.Random(5))
+    assert result["status"] == "killed"
+    rewards = result["rewards"]
+    assert rewards[0]["user_id"] == 1 and rewards[0]["top"] is True
+    assert rewards[0]["coins"] > 0
+    # Получен предмет и монеты
+    assert len(db.get_inventory(1)) == 1
+    assert db.get_or_create_player(1)["coins"] > 0
+    # Босса больше нет
+    assert db.get_active_boss("chatA") is None
+
+
+def test_hit_after_defeat_reports_no_boss(env, monkeypatch):
+    boss, config = env["boss"], env["config"]
+    monkeypatch.setattr(config, "BOSS_TEMPLATES", [{"emoji": "👹", "name": "Слизень", "hp": 1}])
+    boss.summon("chatA")
+    boss.hit(1, "chatA")
+    assert boss.hit(2, "chatA")["status"] == "no_boss"
+
+
+def test_reward_split_by_damage(env, monkeypatch):
+    boss, db, config = env["boss"], env["database"], env["config"]
+    monkeypatch.setattr(config, "BOSS_TEMPLATES", [{"emoji": "👹", "name": "Голем", "hp": 40}])
+    b, _ = boss.summon("chatA")
+    bid = b["id"]
+    # Вручную зададим неравный вклад, затем добьём
+    db.apply_boss_hit(bid, 1, 30)
+    db.apply_boss_hit(bid, 2, 9)
+    boss.hit(3, "chatA", rng=random.Random(0))  # добивает
+    # Игрок 1 (больше урона) получил больше монет, чем игрок 2
+    c1 = db.get_or_create_player(1)["coins"]
+    c2 = db.get_or_create_player(2)["coins"]
+    assert c1 > c2

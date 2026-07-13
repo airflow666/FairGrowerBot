@@ -46,6 +46,11 @@ def main():
     app.add_handler(CommandHandler("start", group.cmd_start))
     app.add_handler(CommandHandler("help", group.cmd_help))
     app.add_handler(CommandHandler("grow", group.cmd_grow))
+    app.add_handler(CommandHandler("profile", group.cmd_profile))
+    app.add_handler(CommandHandler("expedition", group.cmd_expedition))
+    app.add_handler(CommandHandler("inventory", group.cmd_inventory))
+    app.add_handler(CommandHandler("boss", group.cmd_boss))
+    app.add_handler(CommandHandler("dungeon", group.cmd_dungeon))
     app.add_handler(CommandHandler("top", group.cmd_top))
     app.add_handler(CommandHandler("weektop", group.cmd_weektop))
     app.add_handler(CommandHandler("dickofday", group.cmd_dickofday))
@@ -62,6 +67,11 @@ def main():
         app.job_queue.run_daily(
             group.auto_dick_of_day,
             time=time(hour=0, minute=0, tzinfo=utils.TZ),
+        )
+        # Босс появляется в активных чатах днём
+        app.job_queue.run_daily(
+            group.spawn_bosses,
+            time=time(hour=18, minute=0, tzinfo=utils.TZ),
         )
     else:
         logger.warning("JobQueue недоступен — авто-«писюн дня» отключён. "

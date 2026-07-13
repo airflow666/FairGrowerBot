@@ -130,6 +130,88 @@ def init_db():
             )
         """)
 
+        # Глобальный RPG-персонаж (один на аккаунт, ключ — user_id)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS players (
+                user_id INTEGER PRIMARY KEY,
+                exp INTEGER DEFAULT 0,
+                level INTEGER DEFAULT 1,
+                klass TEXT,
+                coins INTEGER DEFAULT 0,
+                username TEXT,
+                first_name TEXT,
+                created_at TIMESTAMP
+            )
+        """)
+
+        # Экспедиции (глобальные, ключ — user_id; одна активная за раз)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS expeditions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                zone TEXT,
+                chat_key TEXT,
+                started_at TIMESTAMP,
+                ends_at TIMESTAMP,
+                status TEXT DEFAULT 'active'
+            )
+        """)
+
+        # Предметы игроков (глобальные, ключ — user_id)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS player_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                template TEXT,
+                rarity TEXT,
+                slot TEXT,
+                equipped INTEGER DEFAULT 0,
+                obtained_at TIMESTAMP
+            )
+        """)
+
+        # Боссы чата (общий HP-пул на чат)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS bosses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_key TEXT,
+                name TEXT,
+                emoji TEXT,
+                max_hp INTEGER,
+                hp INTEGER,
+                status TEXT DEFAULT 'active',
+                spawned_at TIMESTAMP,
+                defeated_at TIMESTAMP
+            )
+        """)
+
+        # Вклад игроков в бой с боссом (урон, кулдаун)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS boss_hits (
+                boss_id INTEGER,
+                user_id INTEGER,
+                damage INTEGER DEFAULT 0,
+                hits INTEGER DEFAULT 0,
+                last_hit_at TIMESTAMP,
+                PRIMARY KEY (boss_id, user_id)
+            )
+        """)
+
+        # Забеги по подземельям (глобальные, ключ — user_id; один активный)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS dungeon_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                depth INTEGER DEFAULT 0,
+                hp INTEGER,
+                max_hp INTEGER,
+                coins_earned INTEGER DEFAULT 0,
+                treasures INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'active',
+                created_at TIMESTAMP
+            )
+        """)
+
         # Миграции для БД, созданных прежними версиями бота
         _ensure_column(conn, "user_sizes", "max_size", "INTEGER DEFAULT 0")
         _ensure_column(conn, "user_sizes", "grow_streak", "INTEGER DEFAULT 0")
@@ -398,10 +480,15 @@ def expire_duel(duel_id):
         return cur.rowcount > 0
 
 
-def resolve_duel(challenger_id, accepter_id, chat_id, bet):
-    """Начислить/списать ставку и обновить статистику победителя и проигравшего."""
-    winner_id = random.choice([challenger_id, accepter_id])
-    loser_id = accepter_id if winner_id == challenger_id else challenger_id
+def resolve_duel(challenger_id, accepter_id, chat_id, bet, challenger_win_chance=0.5):
+    """Начислить/списать ставку и обновить статистику победителя и проигравшего.
+
+    ``challenger_win_chance`` — шанс победы вызвавшего дуэль (по умолчанию 50/50).
+    """
+    if random.random() < challenger_win_chance:
+        winner_id, loser_id = challenger_id, accepter_id
+    else:
+        winner_id, loser_id = accepter_id, challenger_id
 
     with _connect() as conn:
         adjust_size(conn, winner_id, chat_id, bet)
@@ -549,3 +636,304 @@ def resolve_chat_key(chat_instance):
             "SELECT chat_id FROM chat_links WHERE chat_instance = ?", (chat_instance,)
         ).fetchone()
     return row["chat_id"] if row else str(chat_instance)
+
+
+# --- RPG-персонаж (глобальный, ключ — user_id) ------------------------------
+
+def get_or_create_player(user_id, username=None, first_name=None):
+    """Получить или создать глобального персонажа; обновить имя/username."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM players WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                """INSERT INTO players (user_id, username, first_name, created_at)
+                   VALUES (?, ?, ?, ?)""",
+                (user_id, username, first_name, utils.now().isoformat()),
+            )
+        elif username is not None or first_name is not None:
+            conn.execute(
+                """UPDATE players
+                   SET username = COALESCE(?, username),
+                       first_name = COALESCE(?, first_name)
+                   WHERE user_id = ?""",
+                (username, first_name, user_id),
+            )
+        row = conn.execute(
+            "SELECT * FROM players WHERE user_id = ?", (user_id,)
+        ).fetchone()
+    return dict(row)
+
+
+def update_player_progress(user_id, exp, level):
+    """Сохранить опыт и уровень персонажа."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE players SET exp = ?, level = ? WHERE user_id = ?",
+            (exp, level, user_id),
+        )
+
+
+def set_player_class(user_id, klass):
+    """Задать класс персонажа."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE players SET klass = ? WHERE user_id = ?", (klass, user_id)
+        )
+
+
+def adjust_player_coins(user_id, delta):
+    """Изменить баланс монет персонажа, вернуть новый баланс."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE players SET coins = coins + ? WHERE user_id = ?",
+            (delta, user_id),
+        )
+        row = conn.execute(
+            "SELECT coins FROM players WHERE user_id = ?", (user_id,)
+        ).fetchone()
+    return int(row["coins"]) if row else 0
+
+
+# --- Экспедиции -------------------------------------------------------------
+
+def get_active_expedition(user_id):
+    """Текущая незавершённая экспедиция игрока или ``None``."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM expeditions WHERE user_id = ? AND status = 'active' "
+            "ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def create_expedition(user_id, zone, chat_key, ends_at):
+    """Создать активную экспедицию, вернуть её id."""
+    with _connect() as conn:
+        cur = conn.execute(
+            """INSERT INTO expeditions (user_id, zone, chat_key, started_at, ends_at,
+                                        status)
+               VALUES (?, ?, ?, ?, ?, 'active')""",
+            (user_id, zone, chat_key, utils.now().isoformat(), ends_at),
+        )
+        return cur.lastrowid
+
+
+def get_pending_expedition_users(chat_key):
+    """user_id всех, у кого в этом чате есть вернувшаяся, но не забранная экспедиция."""
+    now = utils.now().isoformat()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT user_id FROM expeditions "
+            "WHERE chat_key = ? AND status = 'active' AND ends_at <= ?",
+            (str(chat_key), now),
+        ).fetchall()
+    return [r["user_id"] for r in rows]
+
+
+def claim_expedition(expedition_id):
+    """Атомарно завершить экспедицию. Возвращает её данные или ``None``."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE expeditions SET status = 'claimed' "
+            "WHERE id = ? AND status = 'active'",
+            (expedition_id,),
+        )
+        if cur.rowcount == 0:
+            return None
+        row = conn.execute(
+            "SELECT * FROM expeditions WHERE id = ?", (expedition_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+# --- Инвентарь и экипировка -------------------------------------------------
+
+def add_item(user_id, template, rarity, slot):
+    """Добавить предмет в инвентарь, вернуть его id."""
+    with _connect() as conn:
+        cur = conn.execute(
+            """INSERT INTO player_items (user_id, template, rarity, slot, obtained_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (user_id, template, rarity, slot, utils.now().isoformat()),
+        )
+        return cur.lastrowid
+
+
+def get_inventory(user_id, limit=None):
+    """Предметы игрока (сначала надетые, затем по редкости)."""
+    query = "SELECT * FROM player_items WHERE user_id = ? ORDER BY equipped DESC, id DESC"
+    params = [user_id]
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(limit)
+    with _connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_equipped(user_id):
+    """Надетые предметы игрока."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM player_items WHERE user_id = ? AND equipped = 1",
+            (user_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def equip_item(user_id, item_id):
+    """Надеть предмет (сняв другой в том же слоте). True при успехе."""
+    with _connect() as conn:
+        item = conn.execute(
+            "SELECT slot FROM player_items WHERE id = ? AND user_id = ?",
+            (item_id, user_id),
+        ).fetchone()
+        if item is None:
+            return False
+        conn.execute(
+            "UPDATE player_items SET equipped = 0 WHERE user_id = ? AND slot = ?",
+            (user_id, item["slot"]),
+        )
+        conn.execute(
+            "UPDATE player_items SET equipped = 1 WHERE id = ? AND user_id = ?",
+            (item_id, user_id),
+        )
+    return True
+
+
+def unequip_item(user_id, item_id):
+    """Снять предмет."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE player_items SET equipped = 0 WHERE id = ? AND user_id = ?",
+            (item_id, user_id),
+        )
+
+
+# --- Боссы ------------------------------------------------------------------
+
+def get_active_boss(chat_key):
+    """Активный босс чата или ``None``."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM bosses WHERE chat_key = ? AND status = 'active' "
+            "ORDER BY id DESC LIMIT 1",
+            (str(chat_key),),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def spawn_boss(chat_key, name, emoji, max_hp):
+    """Заспавнить босса, если в чате нет активного. Вернуть id или ``None``."""
+    with _connect() as conn:
+        active = conn.execute(
+            "SELECT 1 FROM bosses WHERE chat_key = ? AND status = 'active'",
+            (str(chat_key),),
+        ).fetchone()
+        if active:
+            return None
+        cur = conn.execute(
+            """INSERT INTO bosses (chat_key, name, emoji, max_hp, hp, status, spawned_at)
+               VALUES (?, ?, ?, ?, ?, 'active', ?)""",
+            (str(chat_key), name, emoji, max_hp, max_hp, utils.now().isoformat()),
+        )
+        return cur.lastrowid
+
+
+def get_boss_hit(boss_id, user_id):
+    """Запись о вкладе игрока в бой (для кулдауна) или ``None``."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM boss_hits WHERE boss_id = ? AND user_id = ?",
+            (boss_id, user_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def apply_boss_hit(boss_id, user_id, damage):
+    """Нанести урону боссу (атомарно) и учесть вклад. Возвращает новый HP."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE bosses SET hp = hp - ? WHERE id = ? AND status = 'active'",
+            (damage, boss_id),
+        )
+        conn.execute(
+            """INSERT INTO boss_hits (boss_id, user_id, damage, hits, last_hit_at)
+               VALUES (?, ?, ?, 1, ?)
+               ON CONFLICT(boss_id, user_id) DO UPDATE
+                 SET damage = damage + excluded.damage,
+                     hits = hits + 1,
+                     last_hit_at = excluded.last_hit_at""",
+            (boss_id, user_id, damage, utils.now().isoformat()),
+        )
+        row = conn.execute("SELECT hp FROM bosses WHERE id = ?", (boss_id,)).fetchone()
+    return int(row["hp"]) if row else 0
+
+
+def defeat_boss(boss_id):
+    """Атомарно пометить босса поверженным. True, если это сделали мы."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE bosses SET status = 'defeated', defeated_at = ? "
+            "WHERE id = ? AND status = 'active'",
+            (utils.now().isoformat(), boss_id),
+        )
+        return cur.rowcount > 0
+
+
+def get_boss_contributors(boss_id):
+    """Участники боя, отсортированные по нанесённому урону (убыв.)."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT user_id, damage, hits FROM boss_hits WHERE boss_id = ? "
+            "ORDER BY damage DESC",
+            (boss_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# --- Подземелья -------------------------------------------------------------
+
+def get_active_dungeon_run(user_id):
+    """Активный забег игрока по подземелью или ``None``."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM dungeon_runs WHERE user_id = ? AND status = 'active' "
+            "ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def create_dungeon_run(user_id, max_hp):
+    """Начать забег по подземелью, вернуть его id."""
+    with _connect() as conn:
+        cur = conn.execute(
+            """INSERT INTO dungeon_runs (user_id, depth, hp, max_hp, status, created_at)
+               VALUES (?, 0, ?, ?, 'active', ?)""",
+            (user_id, max_hp, max_hp, utils.now().isoformat()),
+        )
+        return cur.lastrowid
+
+
+def update_dungeon_run(run_id, depth, hp, coins_earned, treasures):
+    """Обновить состояние забега."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE dungeon_runs SET depth = ?, hp = ?, coins_earned = ?, "
+            "treasures = ? WHERE id = ?",
+            (depth, hp, coins_earned, treasures, run_id),
+        )
+
+
+def finish_dungeon_run(run_id, status):
+    """Атомарно завершить забег ('left' или 'dead'). True, если это сделали мы."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE dungeon_runs SET status = ? WHERE id = ? AND status = 'active'",
+            (status, run_id),
+        )
+        return cur.rowcount > 0

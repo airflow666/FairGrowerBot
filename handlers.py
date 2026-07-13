@@ -20,6 +20,7 @@ from telegram.ext import ContextTypes
 
 import config
 import database
+from game import boss, character, classes, dungeon, expeditions, leveling, loot
 from utils import format_mention
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,11 @@ THUMB_URL = "https://img.icons8.com/emoji/48/000000/eggplant-emoji.png"
 # Пункты меню inline-режима: (id, заголовок, описание)
 MENU = [
     ("grow", "📈 Grow", "Увеличить пиписю"),
+    ("profile", "👤 Профиль", "Персонаж, класс, уровень"),
+    ("expedition", "🗺️ Экспедиция", "Отправить героя за добычей"),
+    ("inventory", "🎒 Инвентарь", "Предметы и экипировка"),
+    ("boss", "🐉 Босс", "Сразиться с боссом чата"),
+    ("dungeon", "🏰 Подземелье", "Рискнуть в подземелье"),
     ("top", "🏆 Top", "Топ участников"),
     ("weektop", "📅 Топ недели", "Прирост за 7 дней"),
     ("dickofday", "🎉 Dick Of Day", "Писюн дня"),
@@ -110,6 +116,22 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _accept_duel(query, context, chat_key, int(data.rsplit("_", 1)[1]))
         elif data.startswith("casino_"):
             await _play_casino(query, context, chat_key, int(data.rsplit("_", 1)[1]))
+        elif data.startswith("setclass_"):
+            await _set_class(query, context, chat_key, data[len("setclass_"):])
+        elif data.startswith("start_exp_"):
+            await _start_expedition(query, context, chat_key, data[len("start_exp_"):])
+        elif data == "claim_exp":
+            await _claim_expedition(query, context, chat_key)
+        elif data.startswith("equip_"):
+            await _equip_item(query, context, chat_key, int(data.rsplit("_", 1)[1]))
+        elif data == "boss_hit":
+            await _boss_hit(query, context, chat_key)
+        elif data == "dng_enter":
+            await _dungeon_enter(query, context, chat_key)
+        elif data.startswith("dng_deep_"):
+            await _dungeon_deeper(query, context, int(data.rsplit("_", 1)[1]))
+        elif data.startswith("dng_leave_"):
+            await _dungeon_leave(query, context, int(data.rsplit("_", 1)[1]))
         elif data == "link_stats":
             # Связка chat_instance ↔ chat_id уже выполнена в _chat_key выше
             await query.edit_message_text(
@@ -132,6 +154,11 @@ async def _run_command(query, context, chat_key, cmd):
     user = query.from_user
     handlers = {
         "grow": lambda: cmd_grow(chat_key, user),
+        "profile": lambda: cmd_profile(chat_key, user),
+        "expedition": lambda: cmd_expedition(chat_key, user),
+        "inventory": lambda: cmd_inventory(chat_key, user),
+        "boss": lambda: cmd_boss(chat_key, user),
+        "dungeon": lambda: cmd_dungeon(chat_key, user),
         "top": lambda: cmd_top(chat_key),
         "weektop": lambda: cmd_weektop(chat_key),
         "dickofday": lambda: cmd_dickofday(chat_key),
@@ -189,6 +216,12 @@ def cmd_grow(chat_key, user):
     if result["streak"] >= 7:
         codes.append("streak_7")
     text += _achievement_suffix(user.id, chat_key, codes)
+
+    exp = character.grant_exp(user.id, config.EXP_PER_GROW,
+                              user.username, user.first_name)
+    text += f"\n✨ +{exp['gained']} XP"
+    if exp["level_up"] > 0:
+        text += f"\n🎉 Новый уровень: <b>{exp['level']}</b>!"
     return text
 
 
@@ -269,6 +302,388 @@ def cmd_stats(chat_key, user):
         f"🏅 Достижений: {len(achievements)}/{len(config.ACHIEVEMENTS)}"
     )
     return text
+
+
+def _progress_bar(cur, total, width=10):
+    if total <= 0:
+        return "▰" * width
+    filled = max(0, min(width, round(width * cur / total)))
+    return "▰" * filled + "▱" * (width - filled)
+
+
+def _class_keyboard(owner_id):
+    rows = [
+        [InlineKeyboardButton(f"{cls['emoji']} {cls['name']} — {cls['perk']}",
+                              callback_data=f"setclass_{owner_id}_{code}")]
+        for code, cls in config.CLASSES.items()
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def cmd_profile(chat_key, user):
+    player = character.get_or_create(user.id, user.username, user.first_name)
+    level, into, need = leveling.progress(player["exp"])
+    stats = character.effective_stats(player)
+    name = format_mention(user.id, user.username, user.first_name)
+    size = database.get_user_size(user.id, chat_key)
+
+    stat_line = "  ".join(
+        f"{config.STATS[s][0]} {config.STATS[s][1]} {stats[s]}" for s in config.STATS
+    )
+    text = (
+        f"👤 <b>Профиль</b> {name}\n\n"
+        f"🎖️ Класс: {classes.class_name(player['klass'])}\n"
+        f"⭐ Уровень {level}  {_progress_bar(into, need)}  {into}/{need} XP\n"
+        f"{stat_line}\n"
+        f"🪙 Монеты: {int(player['coins'])}\n"
+        f"📏 Размер в этом чате: {size} см"
+    )
+    markup = None
+    if not player["klass"]:
+        text += "\n\n<b>Выбери класс</b> (влияет на распределение характеристик):"
+        markup = _class_keyboard(user.id)
+    return text, markup
+
+
+async def _set_class(query, context, chat_key, payload):
+    """Выбор класса персонажа (только владельцем профиля)."""
+    owner_str, _, code = payload.partition("_")
+    try:
+        owner_id = int(owner_str)
+    except ValueError:
+        return
+    if query.from_user.id != owner_id:
+        await query.answer("Это не твой профиль!", show_alert=True)
+        return
+    if character.get_or_create(owner_id)["klass"]:
+        await query.answer("Класс уже выбран.", show_alert=True)
+        return
+    if not character.set_class(owner_id, code):
+        return
+    text, markup = cmd_profile(chat_key, query.from_user)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+
+
+# --- Экспедиции -------------------------------------------------------------
+
+def _format_duration(seconds):
+    h, m = seconds // 3600, (seconds % 3600) // 60
+    if h and m:
+        return f"{h}ч {m}м"
+    return f"{h}ч" if h else f"{m}м"
+
+
+def _format_left(td):
+    total = max(0, int(td.total_seconds()))
+    h, m = total // 3600, (total % 3600) // 60
+    return f"{h}ч {m}м" if h else f"{m}м"
+
+
+def cmd_expedition(chat_key, user):
+    player = character.get_or_create(user.id, user.username, user.first_name)
+    active = database.get_active_expedition(user.id)
+
+    if active:
+        zone = config.ZONES.get(active["zone"], {})
+        head = f"{zone.get('emoji', '')} {zone.get('name', '')}"
+        if expeditions.is_ready(active):
+            markup = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🎁 Забрать награду", callback_data="claim_exp")]]
+            )
+            return (f"🗺️ <b>Экспедиция вернулась!</b>\n\n{head}\nЗабери награду 👇",
+                    markup)
+        left = _format_left(expeditions.time_left(active))
+        return f"🗺️ <b>Герой в экспедиции</b>\n\n{head}\n⏳ Вернётся через {left}"
+
+    text = "🗺️ <b>Выбери зону для экспедиции:</b>\n\n"
+    rows = []
+    for code, zone, unlocked in expeditions.available_zones(player["level"]):
+        dur = _format_duration(zone["duration"])
+        if unlocked:
+            text += (f"{zone['emoji']} <b>{zone['name']}</b> — {dur}, "
+                     f"опыт {zone['exp']}, монеты {zone['coins'][0]}–{zone['coins'][1]}\n")
+            rows.append([InlineKeyboardButton(f"{zone['emoji']} {zone['name']}",
+                                              callback_data=f"start_exp_{code}")])
+        else:
+            text += f"🔒 {zone['emoji']} {zone['name']} — нужен уровень {zone['min_level']}\n"
+    return text, (InlineKeyboardMarkup(rows) if rows else None)
+
+
+async def _start_expedition(query, context, chat_key, zone_code):
+    user = query.from_user
+    result = expeditions.start(user.id, zone_code, chat_key)
+    if isinstance(result, str):
+        await query.answer(result, show_alert=True)
+        return
+    zone = config.ZONES[zone_code]
+    await query.edit_message_text(
+        f"🗺️ <b>Герой отправился в экспедицию!</b>\n\n"
+        f"{zone['emoji']} {zone['name']}\n"
+        f"⏳ Вернётся через {_format_duration(zone['duration'])}",
+        parse_mode=ParseMode.HTML,
+    )
+    _schedule_expedition_return(context, chat_key, zone["duration"])
+
+
+def _reward_text(reward):
+    zone = reward["zone"]
+    text = (
+        f"🗺️ <b>Экспедиция завершена!</b>\n{zone['emoji']} {zone['name']}\n\n"
+        f"✨ +{reward['exp']} XP\n"
+        f"🪙 +{reward['coins']} монет\n"
+        f"🎁 Добыча: {loot.item_label(reward['item'])}"
+    )
+    if reward["level_up"] > 0:
+        text += f"\n🎉 Новый уровень: <b>{reward['level']}</b>!"
+    return text
+
+
+async def _claim_expedition(query, context, chat_key):
+    reward = expeditions.claim(query.from_user.id)
+    if reward is None:
+        await query.answer("Награда уже забрана или экспедиция ещё идёт.",
+                           show_alert=True)
+        return
+    await query.edit_message_text(_reward_text(reward), parse_mode=ParseMode.HTML)
+
+
+def _is_postable_chat(chat_key):
+    """Можно ли отправить сообщение в чат (реальный chat_id активной группы)."""
+    try:
+        int(chat_key)
+    except (TypeError, ValueError):
+        return False
+    return any(c["chat_id"] == str(chat_key) for c in database.get_active_chats())
+
+
+def _schedule_expedition_return(context, chat_key, duration):
+    if context.job_queue is None or not _is_postable_chat(chat_key):
+        return
+    context.job_queue.run_once(
+        _expedition_return_job, duration, data={"chat_key": chat_key},
+    )
+
+
+async def _expedition_return_job(context: ContextTypes.DEFAULT_TYPE):
+    """Проверить вернувшиеся экспедиции этого чата и объявить добычу."""
+    chat_key = context.job.data["chat_key"]
+    # Дайджест: собираем все готовые и ещё не забранные экспедиции этого чата
+    lines = []
+    for user_id in database.get_pending_expedition_users(chat_key):
+        reward = expeditions.claim(user_id)
+        if reward is None:
+            continue
+        player = database.get_or_create_player(user_id)
+        name = format_mention(player["user_id"], player["username"],
+                              player["first_name"])
+        lines.append(f"🗺️ {name}: {loot.item_label(reward['item'])} "
+                     f"🪙 +{reward['coins']}")
+    if not lines:
+        return
+    text = "🎁 <b>Экспедиции вернулись!</b>\n\n" + "\n".join(lines)
+    try:
+        await context.bot.send_message(int(chat_key), text, parse_mode=ParseMode.HTML)
+    except Exception:  # noqa: BLE001
+        logger.exception("Не удалось объявить возврат экспедиций в чат %s", chat_key)
+
+
+# --- Инвентарь --------------------------------------------------------------
+
+def cmd_inventory(chat_key, user):
+    character.get_or_create(user.id, user.username, user.first_name)
+    items = database.get_inventory(user.id, limit=config.INVENTORY_DISPLAY_LIMIT)
+    if not items:
+        return "🎒 Инвентарь пуст.\nОтправляйся в экспедицию за добычей! 🗺️"
+
+    equipped = {i["slot"]: i for i in items if i["equipped"]}
+    text = "🎒 <b>Инвентарь</b>\n\n<b>Надето:</b>\n"
+    for slot, (emoji, sname, _stat) in config.SLOTS.items():
+        it = equipped.get(slot)
+        shown = loot.item_label(it["template"]) if it else "—"
+        text += f"{emoji} {sname}: {shown}\n"
+
+    text += "\n<b>Предметы:</b>\n"
+    rows = []
+    for it in items:
+        mark = "✅ " if it["equipped"] else ""
+        text += f"{mark}{loot.item_label(it['template'])}\n"
+        if not it["equipped"]:
+            rows.append([InlineKeyboardButton(
+                f"Надеть: {loot.item_label(it['template'])}",
+                callback_data=f"equip_{it['id']}")])
+    return text, (InlineKeyboardMarkup(rows) if rows else None)
+
+
+async def _equip_item(query, context, chat_key, item_id):
+    user = query.from_user
+    if not database.equip_item(user.id, item_id):
+        await query.answer("Это не твой предмет.", show_alert=True)
+        return
+    text, markup = cmd_inventory(chat_key, user)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+
+
+# --- Боссы ------------------------------------------------------------------
+
+def boss_message(active_boss):
+    """Карточка босса с полосой HP и кнопкой удара."""
+    hp = max(0, int(active_boss["hp"]))
+    bar = _progress_bar(hp, active_boss["max_hp"])
+    text = (
+        f"{active_boss['emoji']} <b>{active_boss['name']}</b>\n\n"
+        f"❤️ HP: {bar}  {hp}/{active_boss['max_hp']}\n\n"
+        f"Бейте босса вместе! Награда — по вкладу урона."
+    )
+    markup = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("⚔️ Ударить", callback_data="boss_hit")]]
+    )
+    return text, markup
+
+
+def cmd_boss(chat_key, user):
+    active, _is_new = boss.summon(chat_key)
+    return boss_message(active)
+
+
+def _boss_defeat_text(result):
+    b = result["boss"]
+    lines = [
+        f"💥 <b>{b['emoji']} {b['name']} повержен!</b>\n",
+        "🏆 <b>Награды по вкладу урона:</b>",
+    ]
+    for r in result["rewards"][:5]:
+        player = database.get_or_create_player(r["user_id"])
+        name = format_mention(player["user_id"], player["username"],
+                              player["first_name"])
+        crown = "👑 " if r["top"] else ""
+        lines.append(f"{crown}{name}: {loot.item_label(r['item'])}  🪙 +{r['coins']}")
+    return "\n".join(lines)
+
+
+async def _boss_hit(query, context, chat_key):
+    result = boss.hit(query.from_user.id, chat_key)
+    status = result["status"]
+
+    if status == "no_boss":
+        await query.answer("Босс уже повержен!", show_alert=True)
+    elif status == "cooldown":
+        mins = int(result["left"] // 60) + 1
+        await query.answer(f"Ты уже бил. Отдышись ~{mins} мин.", show_alert=True)
+    elif status == "hit":
+        await query.answer(f"⚔️ Урон: {result['damage']}")
+        updated = dict(result["boss"])
+        updated["hp"] = result["hp"]
+        text, markup = boss_message(updated)
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                      reply_markup=markup)
+    elif status == "killed":
+        await query.answer("💥 БОСС ПОВЕРЖЕН!")
+        await query.edit_message_text(_boss_defeat_text(result),
+                                      parse_mode=ParseMode.HTML)
+
+
+# --- Подземелья -------------------------------------------------------------
+
+def _dungeon_room_message(run, owner_id):
+    hp = max(0, int(run["hp"]))
+    bar = _progress_bar(hp, run["max_hp"])
+    text = (
+        f"🏰 <b>Подземелье — глубина {run['depth']}</b>\n\n"
+        f"❤️ HP: {bar}  {hp}/{run['max_hp']}\n"
+        f"🪙 Накоплено: {run['coins_earned']}  📦 Сундуков: {run['treasures']}\n\n"
+        f"Идти глубже или уйти с добычей?"
+    )
+    markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("⬇️ Глубже", callback_data=f"dng_deep_{owner_id}"),
+        InlineKeyboardButton("🚪 Уйти с добычей", callback_data=f"dng_leave_{owner_id}"),
+    ]])
+    return text, markup
+
+
+def cmd_dungeon(chat_key, user):
+    character.get_or_create(user.id, user.username, user.first_name)
+    run = database.get_active_dungeon_run(user.id)
+    if run:
+        return _dungeon_room_message(run, user.id)
+
+    player = database.get_or_create_player(user.id)
+    cost = config.DUNGEON_ENTRY_COST
+    text = (
+        f"🏰 <b>Подземелье</b>\n\n"
+        f"Спускайся вглубь за сокровищами, но берегись ловушек!\n"
+        f"Уйти с добычей можно в любой момент — или потерять всё.\n\n"
+        f"💰 Вход: {cost} монет (у тебя {int(player['coins'])})"
+    )
+    if player["coins"] >= cost:
+        markup = InlineKeyboardMarkup(
+            [[InlineKeyboardButton(f"🏰 Войти ({cost} монет)",
+                                   callback_data="dng_enter")]]
+        )
+    else:
+        text += "\n\n😔 Не хватает монет — сходи в экспедицию или победи босса."
+        markup = None
+    return text, markup
+
+
+async def _dungeon_enter(query, context, chat_key):
+    user = query.from_user
+    result = dungeon.enter(user.id)
+    if result["status"] == "no_coins":
+        await query.answer(
+            f"Нужно {result['need']} монет (у тебя {result['have']}).",
+            show_alert=True,
+        )
+        return
+    text, markup = _dungeon_room_message(result["run"], user.id)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+
+
+async def _dungeon_deeper(query, context, owner_id):
+    user = query.from_user
+    if user.id != owner_id:
+        await query.answer("Это не твой забег!", show_alert=True)
+        return
+    result = dungeon.advance(user.id)
+    status = result["status"]
+    if status == "no_run":
+        await query.answer("Забег уже завершён.", show_alert=True)
+        return
+    if status == "dead":
+        await query.answer("💀 Ты погиб!", show_alert=True)
+        await query.edit_message_text(
+            f"💀 <b>Ты погиб на глубине {result['depth']}!</b>\n\n"
+            f"Ловушка нанесла {result['damage']} урона.\n"
+            f"Вся добыча и плата за вход потеряны. 🪦",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    run = database.get_active_dungeon_run(user.id)
+    text, markup = _dungeon_room_message(run, owner_id)
+    if status == "trap":
+        await query.answer(f"🪤 Ловушка! -{result['damage']} HP")
+    else:
+        await query.answer(f"📦 Сундук! +{result['gain']} монет")
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+
+
+async def _dungeon_leave(query, context, owner_id):
+    user = query.from_user
+    if user.id != owner_id:
+        await query.answer("Это не твой забег!", show_alert=True)
+        return
+    summary = dungeon.leave(user.id)
+    if summary is None:
+        await query.answer("Забег уже завершён.", show_alert=True)
+        return
+    items_text = "\n".join(loot.item_label(i) for i in summary["items"]) or "—"
+    text = (
+        f"🏰 <b>Вылазка окончена!</b>\nГлубина: {summary['depth']}\n\n"
+        f"🪙 Монет: +{summary['coins']}\n"
+        f"🎁 Добыча:\n{items_text}"
+    )
+    if summary["level_up"] > 0:
+        text += f"\n\n🎉 Новый уровень: <b>{summary['level']}</b>!"
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML)
 
 
 def cmd_duel(chat_key, user):
@@ -413,9 +828,13 @@ async def _accept_duel(query, context, chat_key, duel_id):
 
     _cancel_duel_timeout(context, duel_id)
 
-    winner_id, loser_id = database.resolve_duel(challenger_id, accepter.id, chat_key, bet)
+    win_chance = character.duel_win_chance(challenger_id, accepter.id)
+    winner_id, loser_id = database.resolve_duel(challenger_id, accepter.id, chat_key,
+                                                bet, win_chance)
     database.get_or_create_user(accepter.id, chat_key, accepter.username,
                                 accepter.first_name)
+    character.grant_exp(winner_id, config.EXP_PER_DUEL_WIN)
+    character.grant_exp(loser_id, config.EXP_PER_DUEL_LOSS)
 
     challenger = database.get_or_create_user(challenger_id, chat_key)
     challenger_name = format_mention(challenger_id, challenger["username"],
@@ -429,7 +848,9 @@ async def _accept_duel(query, context, chat_key, duel_id):
         f"{challenger_name} VS {accepter_name}\n"
         f"💰 Ставка: {bet} см\n\n"
         f"🏆 Победитель: {winner_name}! (+{bet} см)\n"
-        f"💀 Проигравший: {loser_name}! (-{bet} см)"
+        f"💀 Проигравший: {loser_name}! (-{bet} см)\n\n"
+        f"✨ +{config.EXP_PER_DUEL_WIN} XP победителю, "
+        f"+{config.EXP_PER_DUEL_LOSS} XP проигравшему"
     )
 
     wins = database.get_duel_stats(winner_id, chat_key)["wins"]
