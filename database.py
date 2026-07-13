@@ -197,6 +197,21 @@ def init_db():
             )
         """)
 
+        # Забеги по подземельям (глобальные, ключ — user_id; один активный)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS dungeon_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                depth INTEGER DEFAULT 0,
+                hp INTEGER,
+                max_hp INTEGER,
+                coins_earned INTEGER DEFAULT 0,
+                treasures INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'active',
+                created_at TIMESTAMP
+            )
+        """)
+
         # Миграции для БД, созданных прежними версиями бота
         _ensure_column(conn, "user_sizes", "max_size", "INTEGER DEFAULT 0")
         _ensure_column(conn, "user_sizes", "grow_streak", "INTEGER DEFAULT 0")
@@ -878,3 +893,47 @@ def get_boss_contributors(boss_id):
             (boss_id,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# --- Подземелья -------------------------------------------------------------
+
+def get_active_dungeon_run(user_id):
+    """Активный забег игрока по подземелью или ``None``."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM dungeon_runs WHERE user_id = ? AND status = 'active' "
+            "ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def create_dungeon_run(user_id, max_hp):
+    """Начать забег по подземелью, вернуть его id."""
+    with _connect() as conn:
+        cur = conn.execute(
+            """INSERT INTO dungeon_runs (user_id, depth, hp, max_hp, status, created_at)
+               VALUES (?, 0, ?, ?, 'active', ?)""",
+            (user_id, max_hp, max_hp, utils.now().isoformat()),
+        )
+        return cur.lastrowid
+
+
+def update_dungeon_run(run_id, depth, hp, coins_earned, treasures):
+    """Обновить состояние забега."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE dungeon_runs SET depth = ?, hp = ?, coins_earned = ?, "
+            "treasures = ? WHERE id = ?",
+            (depth, hp, coins_earned, treasures, run_id),
+        )
+
+
+def finish_dungeon_run(run_id, status):
+    """Атомарно завершить забег ('left' или 'dead'). True, если это сделали мы."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE dungeon_runs SET status = ? WHERE id = ? AND status = 'active'",
+            (status, run_id),
+        )
+        return cur.rowcount > 0

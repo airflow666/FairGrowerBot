@@ -20,7 +20,7 @@ from telegram.ext import ContextTypes
 
 import config
 import database
-from game import boss, character, classes, expeditions, leveling, loot
+from game import boss, character, classes, dungeon, expeditions, leveling, loot
 from utils import format_mention
 
 logger = logging.getLogger(__name__)
@@ -34,6 +34,7 @@ MENU = [
     ("expedition", "🗺️ Экспедиция", "Отправить героя за добычей"),
     ("inventory", "🎒 Инвентарь", "Предметы и экипировка"),
     ("boss", "🐉 Босс", "Сразиться с боссом чата"),
+    ("dungeon", "🏰 Подземелье", "Рискнуть в подземелье"),
     ("top", "🏆 Top", "Топ участников"),
     ("weektop", "📅 Топ недели", "Прирост за 7 дней"),
     ("dickofday", "🎉 Dick Of Day", "Писюн дня"),
@@ -125,6 +126,12 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _equip_item(query, context, chat_key, int(data.rsplit("_", 1)[1]))
         elif data == "boss_hit":
             await _boss_hit(query, context, chat_key)
+        elif data == "dng_enter":
+            await _dungeon_enter(query, context, chat_key)
+        elif data.startswith("dng_deep_"):
+            await _dungeon_deeper(query, context, int(data.rsplit("_", 1)[1]))
+        elif data.startswith("dng_leave_"):
+            await _dungeon_leave(query, context, int(data.rsplit("_", 1)[1]))
         elif data == "link_stats":
             # Связка chat_instance ↔ chat_id уже выполнена в _chat_key выше
             await query.edit_message_text(
@@ -151,6 +158,7 @@ async def _run_command(query, context, chat_key, cmd):
         "expedition": lambda: cmd_expedition(chat_key, user),
         "inventory": lambda: cmd_inventory(chat_key, user),
         "boss": lambda: cmd_boss(chat_key, user),
+        "dungeon": lambda: cmd_dungeon(chat_key, user),
         "top": lambda: cmd_top(chat_key),
         "weektop": lambda: cmd_weektop(chat_key),
         "dickofday": lambda: cmd_dickofday(chat_key),
@@ -572,6 +580,110 @@ async def _boss_hit(query, context, chat_key):
         await query.answer("💥 БОСС ПОВЕРЖЕН!")
         await query.edit_message_text(_boss_defeat_text(result),
                                       parse_mode=ParseMode.HTML)
+
+
+# --- Подземелья -------------------------------------------------------------
+
+def _dungeon_room_message(run, owner_id):
+    hp = max(0, int(run["hp"]))
+    bar = _progress_bar(hp, run["max_hp"])
+    text = (
+        f"🏰 <b>Подземелье — глубина {run['depth']}</b>\n\n"
+        f"❤️ HP: {bar}  {hp}/{run['max_hp']}\n"
+        f"🪙 Накоплено: {run['coins_earned']}  📦 Сундуков: {run['treasures']}\n\n"
+        f"Идти глубже или уйти с добычей?"
+    )
+    markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("⬇️ Глубже", callback_data=f"dng_deep_{owner_id}"),
+        InlineKeyboardButton("🚪 Уйти с добычей", callback_data=f"dng_leave_{owner_id}"),
+    ]])
+    return text, markup
+
+
+def cmd_dungeon(chat_key, user):
+    character.get_or_create(user.id, user.username, user.first_name)
+    run = database.get_active_dungeon_run(user.id)
+    if run:
+        return _dungeon_room_message(run, user.id)
+
+    player = database.get_or_create_player(user.id)
+    cost = config.DUNGEON_ENTRY_COST
+    text = (
+        f"🏰 <b>Подземелье</b>\n\n"
+        f"Спускайся вглубь за сокровищами, но берегись ловушек!\n"
+        f"Уйти с добычей можно в любой момент — или потерять всё.\n\n"
+        f"💰 Вход: {cost} монет (у тебя {int(player['coins'])})"
+    )
+    if player["coins"] >= cost:
+        markup = InlineKeyboardMarkup(
+            [[InlineKeyboardButton(f"🏰 Войти ({cost} монет)",
+                                   callback_data="dng_enter")]]
+        )
+    else:
+        text += "\n\n😔 Не хватает монет — сходи в экспедицию или победи босса."
+        markup = None
+    return text, markup
+
+
+async def _dungeon_enter(query, context, chat_key):
+    user = query.from_user
+    result = dungeon.enter(user.id)
+    if result["status"] == "no_coins":
+        await query.answer(
+            f"Нужно {result['need']} монет (у тебя {result['have']}).",
+            show_alert=True,
+        )
+        return
+    text, markup = _dungeon_room_message(result["run"], user.id)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+
+
+async def _dungeon_deeper(query, context, owner_id):
+    user = query.from_user
+    if user.id != owner_id:
+        await query.answer("Это не твой забег!", show_alert=True)
+        return
+    result = dungeon.advance(user.id)
+    status = result["status"]
+    if status == "no_run":
+        await query.answer("Забег уже завершён.", show_alert=True)
+        return
+    if status == "dead":
+        await query.answer("💀 Ты погиб!", show_alert=True)
+        await query.edit_message_text(
+            f"💀 <b>Ты погиб на глубине {result['depth']}!</b>\n\n"
+            f"Ловушка нанесла {result['damage']} урона.\n"
+            f"Вся добыча и плата за вход потеряны. 🪦",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    run = database.get_active_dungeon_run(user.id)
+    text, markup = _dungeon_room_message(run, owner_id)
+    if status == "trap":
+        await query.answer(f"🪤 Ловушка! -{result['damage']} HP")
+    else:
+        await query.answer(f"📦 Сундук! +{result['gain']} монет")
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+
+
+async def _dungeon_leave(query, context, owner_id):
+    user = query.from_user
+    if user.id != owner_id:
+        await query.answer("Это не твой забег!", show_alert=True)
+        return
+    summary = dungeon.leave(user.id)
+    if summary is None:
+        await query.answer("Забег уже завершён.", show_alert=True)
+        return
+    items_text = "\n".join(loot.item_label(i) for i in summary["items"]) or "—"
+    text = (
+        f"🏰 <b>Вылазка окончена!</b>\nГлубина: {summary['depth']}\n\n"
+        f"🪙 Монет: +{summary['coins']}\n"
+        f"🎁 Добыча:\n{items_text}"
+    )
+    if summary["level_up"] > 0:
+        text += f"\n\n🎉 Новый уровень: <b>{summary['level']}</b>!"
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML)
 
 
 def cmd_duel(chat_key, user):

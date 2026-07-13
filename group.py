@@ -31,6 +31,7 @@ WELCOME_TEXT = (
     "🗺️ /expedition — отправить героя за добычей\n"
     "🎒 /inventory — предметы и экипировка\n"
     "🐉 /boss — сразиться с боссом чата\n"
+    "🏰 /dungeon — рискнуть в подземелье\n"
     "🏆 /top — топ участников\n"
     "📅 /weektop — топ прироста за неделю\n"
     "🎉 /dickofday — писюн дня\n"
@@ -48,6 +49,7 @@ HELP_TEXT = (
     "🗺️ /expedition — отправить героя за добычей\n"
     "🎒 /inventory — предметы и экипировка\n"
     "🐉 /boss — сразиться с боссом чата\n"
+    "🏰 /dungeon — рискнуть в подземелье\n"
     "🏆 /top — топ участников чата\n"
     "📅 /weektop — топ прироста за неделю\n"
     "🎉 /dickofday — писюн дня\n"
@@ -127,6 +129,10 @@ async def cmd_inventory(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_boss(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _reply(update, handlers.cmd_boss(_chat_key(update), update.effective_user))
+
+
+async def cmd_dungeon(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _reply(update, handlers.cmd_dungeon(_chat_key(update), update.effective_user))
 
 
 async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
