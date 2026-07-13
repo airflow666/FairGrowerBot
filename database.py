@@ -4,6 +4,7 @@
 состоит в группе), либо ``chat_instance`` из callback-запроса для inline-режима.
 Хранится как есть; для кода это просто непрозрачный идентификатор чата.
 """
+import json
 import random
 import sqlite3
 from contextlib import contextmanager
@@ -159,7 +160,8 @@ def init_db():
             )
         """)
 
-        # Предметы игроков (глобальные, ключ — user_id)
+        # Предметы игроков (глобальные, ключ — user_id).
+        # stats — JSON характеристик экземпляра (роллятся при выпадении).
         conn.execute("""
             CREATE TABLE IF NOT EXISTS player_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -167,6 +169,7 @@ def init_db():
                 template TEXT,
                 rarity TEXT,
                 slot TEXT,
+                stats TEXT,
                 equipped INTEGER DEFAULT 0,
                 obtained_at TIMESTAMP
             )
@@ -223,6 +226,7 @@ def init_db():
         _ensure_column(conn, "active_duels", "inline_message_id", "TEXT")
         _ensure_column(conn, "players", "property_level", "INTEGER DEFAULT 0")
         _ensure_column(conn, "players", "income_at", "TIMESTAMP")
+        _ensure_column(conn, "player_items", "stats", "TEXT")
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_grow_history_chat "
@@ -280,6 +284,13 @@ def adjust_size(conn, user_id, chat_id, delta):
            WHERE user_id = ? AND chat_id = ?""",
         (delta, delta, user_id, chat_id),
     )
+
+
+def add_user_size(user_id, chat_id, delta):
+    """Изменить чатовый размер (открывает собственное соединение)."""
+    get_or_create_user(user_id, chat_id)
+    with _connect() as conn:
+        adjust_size(conn, user_id, chat_id, delta)
 
 
 def apply_grow(user_id, chat_id, change, username=None, first_name=None):
@@ -781,15 +792,77 @@ def claim_expedition(expedition_id):
 
 # --- Инвентарь и экипировка -------------------------------------------------
 
-def add_item(user_id, template, rarity, slot):
-    """Добавить предмет в инвентарь, вернуть его id."""
+def add_item(user_id, instance):
+    """Добавить экземпляр предмета в инвентарь, вернуть его id.
+
+    ``instance`` — словарь ``{template, rarity, slot, stats}`` из ``loot.generate``.
+    """
     with _connect() as conn:
         cur = conn.execute(
-            """INSERT INTO player_items (user_id, template, rarity, slot, obtained_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (user_id, template, rarity, slot, utils.now().isoformat()),
+            """INSERT INTO player_items
+                   (user_id, template, rarity, slot, stats, obtained_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (user_id, instance["template"], instance["rarity"], instance["slot"],
+             json.dumps(instance["stats"]), utils.now().isoformat()),
         )
         return cur.lastrowid
+
+
+def sell_item(user_id, item_id):
+    """Продать один ненадетый предмет. Возвращает его редкость или ``None``."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT rarity FROM player_items WHERE id = ? AND user_id = ? "
+            "AND equipped = 0",
+            (item_id, user_id),
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute("DELETE FROM player_items WHERE id = ?", (item_id,))
+    return row["rarity"]
+
+
+def sell_all_by_rarity(user_id, rarity):
+    """Продать все ненадетые предметы редкости. Возвращает их количество."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM player_items WHERE user_id = ? AND rarity = ? "
+            "AND equipped = 0",
+            (user_id, rarity),
+        )
+        return cur.rowcount
+
+
+def count_items_by_rarity(user_id, rarity):
+    """Сколько у игрока ненадетых предметов данной редкости."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM player_items "
+            "WHERE user_id = ? AND rarity = ? AND equipped = 0",
+            (user_id, rarity),
+        ).fetchone()
+    return int(row["n"])
+
+
+def consume_items_for_craft(user_id, rarity, count):
+    """Списать ``count`` самых старых ненадетых предметов редкости для крафта.
+
+    Атомарно: списывает только если их хватает. True при успехе.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id FROM player_items WHERE user_id = ? AND rarity = ? "
+            "AND equipped = 0 ORDER BY id ASC LIMIT ?",
+            (user_id, rarity, count),
+        ).fetchall()
+        if len(rows) < count:
+            return False
+        ids = [r["id"] for r in rows]
+        conn.execute(
+            f"DELETE FROM player_items WHERE id IN ({','.join('?' * len(ids))})",
+            ids,
+        )
+    return True
 
 
 def get_inventory(user_id, limit=None):

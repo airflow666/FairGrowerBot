@@ -41,13 +41,27 @@ def test_luck_shifts_toward_rare(env):
 
 
 def test_item_bonus_scales_with_rarity(env):
+    loot = env["loot"]
+    common = loot.build_item_stats("weapon", "common")
+    legend = loot.build_item_stats("weapon", "legendary")
+    assert common["strength"] < legend["strength"]
+
+
+def test_epic_rolls_secondary_stat(env):
+    loot = env["loot"]
+    # У эпика есть основной стат слота + хотя бы один вторичный
+    stats = loot.build_item_stats("weapon", "epic")
+    assert "strength" in stats
+    assert len(stats) >= 2
+
+
+def test_legacy_item_bonus_fallback(env):
     loot, config = env["loot"], env["config"]
-    # Найдём обычное и легендарное оружие
-    common = next(c for c, t in config.ITEM_TEMPLATES.items()
-                  if t["slot"] == "weapon" and t["rarity"] == "common")
-    legend = next(c for c, t in config.ITEM_TEMPLATES.items()
-                  if t["slot"] == "weapon" and t["rarity"] == "legendary")
-    assert loot.item_bonus(common)["strength"] < loot.item_bonus(legend)["strength"]
+    # Старый предмет без stats — считаем только основной стат слота
+    code = next(c for c, t in config.ITEM_TEMPLATES.items()
+                if t["slot"] == "weapon" and t["rarity"] == "rare")
+    bonus = loot.item_bonus({"template": code, "stats": None})
+    assert bonus == {"strength": config.RARITIES["rare"][3]}
 
 
 def test_expedition_requires_level(env):
@@ -86,26 +100,32 @@ def test_expedition_claim_gives_rewards(env, monkeypatch):
     assert exp.claim(1) is None
 
 
+def _weapon_instance(loot, config, rarity):
+    code = next(c for c, t in config.ITEM_TEMPLATES.items()
+                if t["slot"] == "weapon" and t["rarity"] == rarity)
+    return {"template": code, "rarity": rarity, "slot": "weapon",
+            "stats": loot.build_item_stats("weapon", rarity)}
+
+
 def test_equip_applies_stat_bonus(env):
     db, character, config, loot = (env["database"], env["character"],
                                    env["config"], env["loot"])
     character.get_or_create(1)
-    weapon = next(c for c, t in config.ITEM_TEMPLATES.items()
-                  if t["slot"] == "weapon" and t["rarity"] == "legendary")
-    item_id = db.add_item(1, weapon, "legendary", "weapon")
-    before = character.effective_stats(db.get_or_create_player(1))["strength"]
+    inst = _weapon_instance(loot, config, "legendary")
+    item_id = db.add_item(1, inst)
+    before = character.effective_stats(db.get_or_create_player(1))
     assert db.equip_item(1, item_id) is True
-    after = character.effective_stats(db.get_or_create_player(1))["strength"]
-    assert after == before + loot.item_bonus(weapon)["strength"]
+    after = character.effective_stats(db.get_or_create_player(1))
+    # Каждый стат предмета добавлен к персонажу
+    for stat, val in inst["stats"].items():
+        assert after[stat] == before[stat] + val
 
 
 def test_equip_replaces_same_slot(env):
-    db, config = env["database"], env["config"]
+    db, config, loot = env["database"], env["config"], env["loot"]
     db.get_or_create_player(1)
-    w1 = next(c for c, t in config.ITEM_TEMPLATES.items() if t["slot"] == "weapon")
-    id1 = db.add_item(1, w1, "common", "weapon")
-    id2 = db.add_item(1, w1, "common", "weapon")
+    id1 = db.add_item(1, _weapon_instance(loot, config, "common"))
+    id2 = db.add_item(1, _weapon_instance(loot, config, "common"))
     db.equip_item(1, id1)
     db.equip_item(1, id2)  # надеваем второе — первое снимается
-    equipped_ids = [i["id"] for i in db.get_equipped(1)]
-    assert equipped_ids == [id2]
+    assert [i["id"] for i in db.get_equipped(1)] == [id2]

@@ -80,6 +80,9 @@ CI: `.github/workflows/ci.yml` (ruff + pytest). Деплой: `deploy/upgrade.sh
 | `boss_hit` / `boss_hit_{owner}` | `_boss_hit` | удар по user_id нажавшего; вариант с owner — карточка в чьём-то меню (сохраняет «⬅️ Меню» при перерисовке), без owner — общая карточка чата (авто-спавн) |
 | `dng_enter` / `dng_deep_{owner}` / `dng_leave_{owner}` | `_dungeon_*` | push-your-luck |
 | `buy_chest_{code}` / `shop_reclass` / `reclass_{owner}_{code}` | `_buy_chest`/`_shop_reclass`/`_reclass` | магазин |
+| `convert_{cm}` | `_convert_cm` | обмен см→монеты |
+| `sell_{item_id}` / `sellall_{rarity}` | `_sell_item`/`_sell_all` | продажа (ownership в SQL) |
+| `craft_menu` / `craft_{rarity}` | `_craft_menu`/`_craft` | крафт тира выше |
 | `claim_income` / `upgrade_prop` | `_claim_income`/`_upgrade_prop` | ферма |
 | `link_stats` | inline в handle_button | активация чата (связка уже сделана `_chat_key`) |
 
@@ -89,7 +92,7 @@ CI: `.github/workflows/ci.yml` (ruff + pytest). Деплой: `deploy/upgrade.sh
 - `active_duels` (duel_id, status: active/completed/expired, bet, inline_message_id)
 - `chats` (chat_id, is_active) — куда бот добавлен; `chat_links` (chat_instance→chat_id)
 - `players` (user_id PK, exp, level, klass, coins, property_level, income_at) — глобальный персонаж
-- `player_items` (id, user_id, template, rarity, slot, equipped)
+- `player_items` (id, user_id, template, rarity, slot, stats JSON, equipped)
 - `expeditions` (user_id, zone, chat_key, ends_at, status: active/claimed)
 - `bosses` (chat_key, hp, status: active/defeated) + `boss_hits` (boss_id, user_id, damage, last_hit_at)
 - `dungeon_runs` (user_id, depth, hp, coins_earned, treasures, status: active/left/dead)
@@ -99,12 +102,25 @@ CI: `.github/workflows/ci.yml` (ruff + pytest). Деплой: `deploy/upgrade.sh
 env `DATABASE_PATH` (тесты подменяют + `importlib.reload(config, database)`).
 
 ## Игровые формулы (все константы в config.py)
+- **5 характеристик**: strength (дуэли/босс), vitality (HP подземелья), luck (лут),
+  crit (удвоение урона босса), speed (ускорение экспедиций). **5 слотов** 1:1:
+  weapon→str, helmet→crit, armor→vit, boots→speed, artifact→luck.
 - Уровень: шаг `LEVEL_STEP*L`; статы: `BASE_STAT + POINTS_PER_LEVEL*(level-1)`
-  по весам класса + бонусы надетых предметов (`character.effective_stats`).
+  по весам класса (класс качает только str/vit/luck) + бонусы предметов.
+- **Предмет — экземпляр** `{template, rarity, slot, stats}`; stats роллятся при
+  выпадении (`loot.generate`) и хранятся в `player_items.stats` (JSON). Эпик+
+  дают вторичные статы (`SECONDARY_STATS`). `loot.item_bonus(row)` — из JSON, с
+  фолбэком на основной стат для легаси-предметов без stats.
+- Лут: веса редкостей × factor^i, **factor = 1 + LUCK_RARITY_FACTOR·√luck +
+  zone_bonus, кап RARITY_FACTOR_CAP** (затухание — иначе Удача раздувает верх).
 - Дуэль: шанс = 0.5 + 0.02*(power_a - power_b), кламп 0.35..0.65; power = strength+level.
-- Лут: веса редкостей × factor^i, factor = 1 + luck*0.02 + zone_bonus (`loot.roll_rarity`).
-- Босс: урон = BOSS_BASE_DAMAGE + strength + rand(0..strength); награды по вкладу.
+- Босс: урон = BOSS_BASE_DAMAGE + strength + rand(0..strength), крит (шанс
+  `crit*BOSS_CRIT_PER_POINT`, кап) удваивает; награды по вкладу урона.
+- Экспедиция: длительность × (1 − min(cap, speed·SPEED_PER_POINT)).
 - Ферма: rate*часы, кап `PROPERTY_CAP_HOURS`; улучшение сначала собирает доход.
+- Экономика: продажа `SELL_PRICES[rarity]`; обмен `CM_PER_COIN` см = 1 монета
+  (односторонний); казино — на монеты; крафт: `CRAFT_ITEMS_REQUIRED` предметов
+  тира → 1 тира выше (самые старые ненадетые, `consume_items_for_craft`).
 
 ## Грабли (не наступать повторно)
 1. `ChosenInlineResult` НЕ имеет chat_id — не использовать (см. ROADMAP).

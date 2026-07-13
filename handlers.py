@@ -52,6 +52,7 @@ MENU = [
     ("weektop", "📅 Топ недели"),
     ("dickofday", "🎉 Писюн дня"),
     ("stats", "📊 Статистика"),
+    ("info", "ℹ️ Помощь"),
 ]
 
 
@@ -178,6 +179,16 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _claim_income(query, context, chat_key)
         elif data == "upgrade_prop":
             await _upgrade_prop(query, context, chat_key)
+        elif data.startswith("sell_"):
+            await _sell_item(query, context, chat_key, int(data.rsplit("_", 1)[1]))
+        elif data.startswith("sellall_"):
+            await _sell_all(query, context, chat_key, data[len("sellall_"):])
+        elif data.startswith("convert_"):
+            await _convert_cm(query, context, chat_key, int(data.rsplit("_", 1)[1]))
+        elif data == "craft_menu":
+            await _craft_menu(query, context, chat_key)
+        elif data.startswith("craft_"):
+            await _craft(query, context, chat_key, data[len("craft_"):])
         elif data == "link_stats":
             # Связка chat_instance ↔ chat_id уже выполнена в _chat_key выше
             await query.edit_message_text(
@@ -207,12 +218,14 @@ def _screen(chat_key, user, screen):
         "dungeon": lambda: cmd_dungeon(chat_key, user),
         "shop": lambda: cmd_shop(chat_key, user),
         "farm": lambda: cmd_farm(chat_key, user),
+        "craft": lambda: cmd_craft(chat_key, user),
         "top": lambda: cmd_top(chat_key),
         "weektop": lambda: cmd_weektop(chat_key),
         "dickofday": lambda: cmd_dickofday(chat_key),
         "stats": lambda: cmd_stats(chat_key, user),
         "duel": lambda: cmd_duel(chat_key, user),
         "casino": lambda: cmd_casino(chat_key, user),
+        "info": lambda: cmd_info(chat_key, user),
     }
     render = screens.get(screen)
     if render is None:
@@ -439,14 +452,16 @@ def cmd_profile(chat_key, user):
     name = format_mention(user.id, user.username, user.first_name)
     size = database.get_user_size(user.id, chat_key)
 
-    stat_line = "  ".join(
-        f"{config.STATS[s][0]} {config.STATS[s][1]} {stats[s]}" for s in config.STATS
+    stat_lines = "\n".join(
+        f"{config.STATS[s][0]} {config.STATS[s][1]}: <b>{stats[s]}</b> "
+        f"— <i>{config.STATS[s][2]}</i>"
+        for s in config.STATS
     )
     text = (
         f"👤 <b>Профиль</b> {name}\n\n"
         f"🎖️ Класс: {classes.class_name(player['klass'])}\n"
-        f"⭐ Уровень {level}  {_progress_bar(into, need)}  {into}/{need} XP\n"
-        f"{stat_line}\n"
+        f"⭐ Уровень {level}  {_progress_bar(into, need)}  {into}/{need} XP\n\n"
+        f"{stat_lines}\n\n"
         f"🪙 Монеты: {int(player['coins'])}\n"
         f"📏 Размер в этом чате: {size} см"
     )
@@ -539,13 +554,20 @@ async def _start_expedition(query, context, chat_key, zone_code):
     _schedule_expedition_return(context, chat_key, zone["duration"])
 
 
+def _item_full(instance):
+    """Название предмета + его характеристики: «🟣 ⚔️ Клинок бури (💪 +11  💥 +2)»."""
+    label = loot.item_label(instance["template"])
+    bonus = loot.stats_text(instance.get("stats") or {})
+    return f"{label} ({bonus})" if bonus else label
+
+
 def _reward_text(reward):
     zone = reward["zone"]
     text = (
         f"🗺️ <b>Экспедиция завершена!</b>\n{zone['emoji']} {zone['name']}\n\n"
         f"✨ +{reward['exp']} XP\n"
         f"🪙 +{reward['coins']} монет\n"
-        f"🎁 Добыча: {loot.item_label(reward['item'])}"
+        f"🎁 Добыча: {_item_full(reward['item'])}"
     )
     if reward["level_up"] > 0:
         text += f"\n🎉 Новый уровень: <b>{reward['level']}</b>!"
@@ -591,7 +613,7 @@ async def _expedition_return_job(context: ContextTypes.DEFAULT_TYPE):
         player = database.get_or_create_player(user_id)
         name = format_mention(player["user_id"], player["username"],
                               player["first_name"])
-        lines.append(f"🗺️ {name}: {loot.item_label(reward['item'])} "
+        lines.append(f"🗺️ {name}: {_item_full(reward['item'])} "
                      f"🪙 +{reward['coins']}")
     if not lines:
         return
@@ -604,39 +626,96 @@ async def _expedition_return_job(context: ContextTypes.DEFAULT_TYPE):
 
 # --- Инвентарь --------------------------------------------------------------
 
+def _item_line(it):
+    """Строка предмета с его характеристиками для инвентаря."""
+    bonus = loot.stats_text(loot.item_bonus(it))
+    return f"{loot.item_label(it['template'])} ({bonus})" if bonus \
+        else loot.item_label(it["template"])
+
+
 def cmd_inventory(chat_key, user):
     character.get_or_create(user.id, user.username, user.first_name)
     items = database.get_inventory(user.id, limit=config.INVENTORY_DISPLAY_LIMIT)
     if not items:
-        return "🎒 Инвентарь пуст.\nОтправляйся в экспедицию за добычей! 🗺️"
+        return ("🎒 Инвентарь пуст.\nОтправляйся в экспедицию за добычей! 🗺️", None)
 
     equipped = {i["slot"]: i for i in items if i["equipped"]}
     text = "🎒 <b>Инвентарь</b>\n\n<b>Надето:</b>\n"
     for slot, (emoji, sname, _stat) in config.SLOTS.items():
         it = equipped.get(slot)
-        shown = loot.item_label(it["template"]) if it else "—"
-        text += f"{emoji} {sname}: {shown}\n"
+        text += f"{emoji} {sname}: {_item_line(it) if it else '—'}\n"
 
-    text += "\n<b>Предметы:</b>\n"
+    text += "\n<b>Предметы:</b> (нажми, чтобы надеть)\n"
     rows = []
+    # Учёт хлама для быстрой распродажи
+    scrap = {}
     for it in items:
         mark = "✅ " if it["equipped"] else ""
-        text += f"{mark}{loot.item_label(it['template'])}\n"
+        text += f"{mark}{_item_line(it)}\n"
         if not it["equipped"]:
-            rows.append([InlineKeyboardButton(
-                f"Надеть: {loot.item_label(it['template'])}",
-                callback_data=f"equip_{it['id']}")])
-    return text, (InlineKeyboardMarkup(rows) if rows else None)
+            rows.append([
+                InlineKeyboardButton(f"🔧 {loot.item_label(it['template'])}",
+                                     callback_data=f"equip_{it['id']}"),
+                InlineKeyboardButton(f"💰 {config.SELL_PRICES.get(it['rarity'], 0)}",
+                                     callback_data=f"sell_{it['id']}"),
+            ])
+            scrap[it["rarity"]] = scrap.get(it["rarity"], 0) + 1
+
+    # Быстрая распродажа обычных/необычных
+    bulk = []
+    for rarity in ("common", "uncommon"):
+        if scrap.get(rarity):
+            emoji = config.RARITIES[rarity][0]
+            bulk.append(InlineKeyboardButton(
+                f"Продать все {emoji} ({scrap[rarity]})",
+                callback_data=f"sellall_{rarity}"))
+    if bulk:
+        rows.append(bulk)
+    return text, InlineKeyboardMarkup(rows) if rows else None
 
 
 async def _equip_item(query, context, chat_key, item_id):
     user = query.from_user
+    # Сравнение с текущим предметом слота — для наглядного попапа
+    before = character.stats_for_user(user.id)
     if not database.equip_item(user.id, item_id):
         await _answer(query, "Это не твой предмет.", alert=True)
         return
+    after = character.stats_for_user(user.id)
+    diff = _stat_diff_text(before, after)
+    await _answer(query, f"✅ Надето! {diff}" if diff else "✅ Надето!")
     text, markup = cmd_inventory(chat_key, user)
     await query.edit_message_text(text, parse_mode=ParseMode.HTML,
                                   reply_markup=_with_back(markup, user.id))
+
+
+def _stat_diff_text(before, after):
+    """Изменение характеристик после экипировки: «💪 12→20  💥 5→7»."""
+    parts = []
+    for stat, (emoji, _n, _d) in config.STATS.items():
+        if after.get(stat, 0) != before.get(stat, 0):
+            parts.append(f"{emoji} {before.get(stat, 0)}→{after.get(stat, 0)}")
+    return "  ".join(parts)
+
+
+async def _sell_item(query, context, chat_key, item_id):
+    price = economy.sell_item(query.from_user.id, item_id)
+    if price is None:
+        await _answer(query, "Нельзя продать (надет или не твой).", alert=True)
+        return
+    await _answer(query, f"💰 Продано за {price} монет")
+    text, markup = cmd_inventory(chat_key, query.from_user)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                  reply_markup=_with_back(markup, query.from_user.id))
+
+
+async def _sell_all(query, context, chat_key, rarity):
+    count, coins = economy.sell_all(query.from_user.id, rarity)
+    await _answer(query, f"💰 Продано {count} шт. за {coins} монет" if count
+                  else "Нечего продавать.", alert=True)
+    text, markup = cmd_inventory(chat_key, query.from_user)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                  reply_markup=_with_back(markup, query.from_user.id))
 
 
 # --- Боссы ------------------------------------------------------------------
@@ -655,6 +734,13 @@ def boss_message(active_boss, owner_id=None):
         f"❤️ HP: {bar}  {hp}/{active_boss['max_hp']}\n\n"
         f"Бейте босса вместе! Награда — по вкладу урона."
     )
+    contributors = database.get_boss_contributors(active_boss["id"])
+    if contributors:
+        text += "\n\n<b>Вклад урона:</b>\n"
+        for c in contributors[:5]:
+            p = database.get_or_create_player(c["user_id"])
+            cname = format_mention(p["user_id"], p["username"], p["first_name"])
+            text += f"⚔️ {cname} — {int(c['damage'])}\n"
     hit_data = f"boss_hit_{owner_id}" if owner_id else "boss_hit"
     markup = InlineKeyboardMarkup(
         [[InlineKeyboardButton("⚔️ Ударить", callback_data=hit_data)]]
@@ -678,7 +764,7 @@ def _boss_defeat_text(result):
         name = format_mention(player["user_id"], player["username"],
                               player["first_name"])
         crown = "👑 " if r["top"] else ""
-        lines.append(f"{crown}{name}: {loot.item_label(r['item'])}  🪙 +{r['coins']}")
+        lines.append(f"{crown}{name}: {_item_full(r['item'])}  🪙 +{r['coins']}")
     return "\n".join(lines)
 
 
@@ -692,7 +778,8 @@ async def _boss_hit(query, context, chat_key, owner_id=None):
         mins = int(result["left"] // 60) + 1
         await _answer(query, f"Ты уже бил. Отдышись ~{mins} мин.", alert=True)
     elif status == "hit":
-        await _answer(query, f"⚔️ Урон: {result['damage']}")
+        crit = " 💥КРИТ!" if result.get("crit") else ""
+        await _answer(query, f"⚔️ Урон: {result['damage']}{crit}")
         updated = dict(result["boss"])
         updated["hp"] = result["hp"]
         text, markup = boss_message(updated, owner_id=owner_id)
@@ -803,7 +890,7 @@ async def _dungeon_leave(query, context, owner_id):
     if summary is None:
         await _answer(query, "Забег уже завершён.", alert=True)
         return
-    items_text = "\n".join(loot.item_label(i) for i in summary["items"]) or "—"
+    items_text = "\n".join(_item_full(i) for i in summary["items"]) or "—"
     text = (
         f"🏰 <b>Вылазка окончена!</b>\nГлубина: {summary['depth']}\n\n"
         f"🪙 Монет: +{summary['coins']}\n"
@@ -830,9 +917,19 @@ def cmd_shop(chat_key, user):
         rows.append([InlineKeyboardButton(
             f"{ch['emoji']} {ch['name']} ({ch['price']})",
             callback_data=f"buy_chest_{code}")])
-    rows.append([InlineKeyboardButton(
-        f"🔄 Сменить класс ({config.CLASS_CHANGE_COST})",
-        callback_data="shop_reclass")])
+    size = database.get_user_size(user.id, chat_key)
+    text += (f"\n📏 Размер в чате: {size} см. Обмен: "
+             f"{config.CM_PER_COIN} см = 1 монета.")
+    conv_row = [
+        InlineKeyboardButton(f"💱 {cm} см", callback_data=f"convert_{cm}")
+        for cm in config.CONVERT_OPTIONS
+    ]
+    rows.append(conv_row)
+    rows.append([
+        InlineKeyboardButton("🛠️ Крафт", callback_data="craft_menu"),
+        InlineKeyboardButton(f"🔄 Класс ({config.CLASS_CHANGE_COST})",
+                             callback_data="shop_reclass"),
+    ])
     return text, InlineKeyboardMarkup(rows)
 
 
@@ -844,8 +941,22 @@ async def _buy_chest(query, context, chat_key, chest_code):
         return
     if result["status"] != "ok":
         return
-    await _answer(query, f"🎁 Получено: {loot.item_label(result['item'])}",
-                       alert=True)
+    await _answer(query, f"🎁 Получено: {_item_full(result['item'])}", alert=True)
+    text, markup = cmd_shop(chat_key, query.from_user)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                  reply_markup=_with_back(markup, query.from_user.id))
+
+
+async def _convert_cm(query, context, chat_key, cm):
+    result = economy.convert_cm(query.from_user.id, chat_key, cm)
+    if result["status"] == "no_size":
+        await _answer(query, f"Мало см: нужно {result['need']}, есть {result['have']}.",
+                      alert=True)
+        return
+    if result["status"] != "ok":
+        await _answer(query, "Обмен недоступен.", alert=True)
+        return
+    await _answer(query, f"💱 {result['cm']} см → +{result['coins']} монет", alert=True)
     text, markup = cmd_shop(chat_key, query.from_user)
     await query.edit_message_text(text, parse_mode=ParseMode.HTML,
                                   reply_markup=_with_back(markup, query.from_user.id))
@@ -949,6 +1060,77 @@ async def _upgrade_prop(query, context, chat_key):
                                   reply_markup=_with_back(markup, query.from_user.id))
 
 
+# --- Крафт ------------------------------------------------------------------
+
+def cmd_craft(chat_key, user):
+    uid = user.id
+    character.get_or_create(uid, user.username, user.first_name)
+    need = config.CRAFT_ITEMS_REQUIRED
+    order = config.RARITY_ORDER
+    text = (
+        f"🛠️ <b>Крафт</b>\n\n"
+        f"Из {need} ненадетых предметов одного тира — 1 предмет тира выше "
+        f"(берутся самые старые).\n\n"
+    )
+    rows = []
+    for i, rarity in enumerate(order[:-1]):
+        cnt = database.count_items_by_rarity(uid, rarity)
+        emoji, nxt = config.RARITIES[rarity][0], config.RARITIES[order[i + 1]][0]
+        text += f"{emoji} → {nxt}:  {cnt}/{need}\n"
+        if cnt >= need:
+            rows.append([InlineKeyboardButton(
+                f"Скрафтить {emoji} → {nxt}", callback_data=f"craft_{rarity}")])
+    if not rows:
+        text += "\nПока нечего крафтить — накопи 5 одинаковых по редкости."
+    return text, (InlineKeyboardMarkup(rows) if rows else None)
+
+
+async def _craft_menu(query, context, chat_key):
+    text, markup = cmd_craft(chat_key, query.from_user)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                  reply_markup=_with_back(markup, query.from_user.id))
+
+
+async def _craft(query, context, chat_key, rarity):
+    result = economy.craft(query.from_user.id, rarity)
+    if result["status"] == "not_enough":
+        await _answer(query, f"Нужно {result['need']} шт. (есть {result['have']}).",
+                      alert=True)
+        return
+    if result["status"] != "ok":
+        await _answer(query, "Крафт недоступен.", alert=True)
+        return
+    await _answer(query, f"🛠️ Скрафчено: {_item_full(result['item'])}", alert=True)
+    text, markup = cmd_craft(chat_key, query.from_user)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                  reply_markup=_with_back(markup, query.from_user.id))
+
+
+# --- Пояснения --------------------------------------------------------------
+
+def cmd_info(chat_key, user):
+    stats = "\n".join(f"{e} <b>{n}</b> — {d}" for e, n, d in config.STATS.values())
+    rarities = "  ".join(f"{r[0]}" for r in config.RARITIES.values())
+    text = (
+        "ℹ️ <b>Как всё устроено</b>\n\n"
+        "<b>Персонаж</b> — общий во всех чатах. Опыт капает с grow, дуэлей, "
+        "экспедиций, боссов и подземелий; уровень даёт очки характеристик.\n\n"
+        f"<b>Характеристики:</b>\n{stats}\n\n"
+        f"<b>Редкости</b> (реже → ценнее):\n{rarities}\n"
+        "Эпик+ дают вторичные статы, мифик+ — несколько.\n\n"
+        "<b>Слоты:</b> "
+        + ", ".join(f"{e} {n}" for e, n, _ in config.SLOTS.values()) + "\n\n"
+        "<b>Дуэль:</b> шанс = 50% ± Сила (коридор "
+        f"{int(config.DUEL_CHANCE_MIN*100)}–{int(config.DUEL_CHANCE_MAX*100)}%).\n"
+        f"<b>Босс:</b> урон от Силы, Крит удваивает (до {int(config.BOSS_CRIT_CAP*100)}%).\n"
+        f"<b>Экспедиции:</b> Скорость ускоряет (до {int(config.EXPEDITION_SPEED_CAP*100)}%).\n"
+        f"<b>Подземелье:</b> Живучесть = запас HP.\n"
+        f"<b>Экономика:</b> монеты с добычи; обмен {config.CM_PER_COIN} см = 1 🪙; "
+        "трать в магазине, на ферму, крафт и казино."
+    )
+    return text
+
+
 def cmd_duel(chat_key, user):
     size = database.get_user_size(user.id, chat_key)
     if size <= 0:
@@ -976,14 +1158,16 @@ def cmd_duel(chat_key, user):
 
 
 def cmd_casino(chat_key, user):
-    size = database.get_user_size(user.id, chat_key)
-    if size <= 0:
-        return "😢 Тебе нечего ставить!\nСначала подрасти через Grow 🍆"
+    player = character.get_or_create(user.id, user.username, user.first_name)
+    coins = int(player["coins"])
+    if coins <= 0:
+        return ("😢 Нет монет для ставки!\nЗаработай на экспедициях, боссах "
+                "или обменяй см в магазине 🪙", None)
 
     buttons, row = [], []
     for stake in config.CASINO_STAKES:
-        if stake <= size:
-            row.append(InlineKeyboardButton(f"{stake} см",
+        if stake <= coins:
+            row.append(InlineKeyboardButton(f"{stake} 🪙",
                                             callback_data=f"casino_{stake}"))
         if len(row) >= 3:
             buttons.append(row)
@@ -991,11 +1175,11 @@ def cmd_casino(chat_key, user):
     if row:
         buttons.append(row)
     if not buttons:
-        buttons = [[InlineKeyboardButton("1 см", callback_data="casino_1")]]
+        buttons = [[InlineKeyboardButton("1 🪙", callback_data="casino_1")]]
 
     text = (
         f"🎰 <b>КАЗИНО</b>\n\n"
-        f"💰 Твой размер: <b>{size} см</b>\n"
+        f"🪙 Баланс: <b>{coins}</b> монет\n"
         f"Шанс 50%: ставка ×{config.CASINO_WIN_MULTIPLIER} или сгорает.\n\n"
         f"Выбери ставку:"
     )
@@ -1142,18 +1326,18 @@ def _cancel_duel_timeout(context, duel_id):
 
 async def _play_casino(query, context, chat_key, bet):
     user = query.from_user
-    size = database.get_user_size(user.id, chat_key)
-    if bet > size:
-        await _answer(query, "⚠️ Ставка больше твоего размера!", alert=True)
+    coins = int(database.get_or_create_player(user.id)["coins"])
+    if bet > coins:
+        await _answer(query, "⚠️ Ставка больше твоего баланса!", alert=True)
         return
 
     win = random.random() < 0.5
-    new_size = database.play_casino(user.id, chat_key, bet, win)
+    new_coins = economy.play_casino(user.id, bet, win)
     if win:
         prize = bet * (config.CASINO_WIN_MULTIPLIER - 1)
-        popup = f"🎉 ПОБЕДА! +{prize} см (теперь {new_size} см)"
+        popup = f"🎉 ПОБЕДА! +{prize} 🪙 (теперь {new_coins})"
     else:
-        popup = f"💀 МИМО! -{bet} см (теперь {new_size} см)"
+        popup = f"💀 МИМО! -{bet} 🪙 (теперь {new_coins})"
     # Результат — попапом, а панель ставок остаётся: можно крутить дальше
     # в том же сообщении, не роняя новые в чат.
     await _answer(query, popup, alert=True)

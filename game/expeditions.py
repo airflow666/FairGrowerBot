@@ -48,9 +48,18 @@ def start(user_id, zone_code, chat_key):
         return f"Нужен уровень {zone['min_level']} для этой зоны."
     if database.get_active_expedition(user_id) is not None:
         return "Твой герой уже в экспедиции!"
-    ends_at = (utils.now() + timedelta(seconds=zone["duration"])).isoformat()
+    duration = effective_duration(player, zone)
+    ends_at = (utils.now() + timedelta(seconds=duration)).isoformat()
     expedition_id = database.create_expedition(user_id, zone_code, chat_key, ends_at)
     return expedition_id, ends_at
+
+
+def effective_duration(player, zone) -> int:
+    """Длительность зоны с учётом Скорости героя (ускорение с капом)."""
+    speed = character.effective_stats(player)["speed"]
+    reduction = min(config.EXPEDITION_SPEED_CAP,
+                    speed * config.EXPEDITION_SPEED_PER_POINT)
+    return int(zone["duration"] * (1 - reduction))
 
 
 def claim(user_id, rng=random):
@@ -73,9 +82,8 @@ def claim(user_id, rng=random):
     database.adjust_player_coins(user_id, coins)
     exp_info = character.grant_exp(user_id, zone["exp"])
 
-    template = loot.roll_item(luck=luck, zone_bonus=zone["luck_bonus"], rng=rng)
-    tmpl = config.ITEM_TEMPLATES[template]
-    database.add_item(user_id, template, tmpl["rarity"], tmpl["slot"])
+    item = loot.generate(luck=luck, zone_bonus=zone["luck_bonus"], rng=rng)
+    database.add_item(user_id, item)
 
     return {
         "zone": zone,
@@ -83,8 +91,7 @@ def claim(user_id, rng=random):
         "exp": zone["exp"],
         "level_up": exp_info["level_up"],
         "level": exp_info["level"],
-        "item": template,
-        "rarity": tmpl["rarity"],
+        "item": item,
         "chat_key": claimed["chat_key"],
     }
 

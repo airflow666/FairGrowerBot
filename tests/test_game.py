@@ -56,7 +56,9 @@ def test_stats_distribution_by_class(env):
 def test_level_1_is_base_stats(env):
     _, _, classes, _ = env
     s = classes.stats_for(1, "giga")
-    assert s == {"strength": 5, "vitality": 5, "luck": 5}
+    # На 1 уровне все характеристики — базовые (5)
+    assert set(s) == {"strength", "vitality", "luck", "crit", "speed"}
+    assert all(v == 5 for v in s.values())
 
 
 def test_grant_exp_and_level_up(env):

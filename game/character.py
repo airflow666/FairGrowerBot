@@ -36,9 +36,14 @@ def effective_stats(player: dict) -> dict:
     """Характеристики персонажа: класс/уровень + бонусы надетых предметов."""
     stats = classes.stats_for(player["level"], player["klass"])
     for item in database.get_equipped(player["user_id"]):
-        for stat, val in loot.item_bonus(item["template"]).items():
+        for stat, val in loot.item_bonus(item).items():
             stats[stat] = stats.get(stat, 0) + val
     return stats
+
+
+def stats_for_user(user_id) -> dict:
+    """Итоговые характеристики игрока по его id."""
+    return effective_stats(database.get_or_create_player(user_id))
 
 
 def _combat_power(player: dict) -> int:

@@ -65,10 +65,9 @@ def leave(user_id, rng=random):
 
     items = []
     for _ in range(run["treasures"]):
-        template = loot.roll_item(luck=luck, zone_bonus=0.1 * run["depth"], rng=rng)
-        tmpl = config.ITEM_TEMPLATES[template]
-        database.add_item(user_id, template, tmpl["rarity"], tmpl["slot"])
-        items.append(template)
+        item = loot.generate(luck=luck, zone_bonus=0.1 * run["depth"], rng=rng)
+        database.add_item(user_id, item)
+        items.append(item)
 
     exp_info = character.grant_exp(user_id, config.DUNGEON_EXP_PER_DEPTH * run["depth"])
     return {
