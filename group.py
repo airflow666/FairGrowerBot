@@ -12,6 +12,7 @@ from telegram.ext import ContextTypes
 
 import database
 import handlers
+from game import boss
 from utils import format_mention
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ WELCOME_TEXT = (
     "👤 /profile — персонаж: класс, уровень, статы\n"
     "🗺️ /expedition — отправить героя за добычей\n"
     "🎒 /inventory — предметы и экипировка\n"
+    "🐉 /boss — сразиться с боссом чата\n"
     "🏆 /top — топ участников\n"
     "📅 /weektop — топ прироста за неделю\n"
     "🎉 /dickofday — писюн дня\n"
@@ -45,6 +47,7 @@ HELP_TEXT = (
     "👤 /profile — персонаж: класс, уровень, статы\n"
     "🗺️ /expedition — отправить героя за добычей\n"
     "🎒 /inventory — предметы и экипировка\n"
+    "🐉 /boss — сразиться с боссом чата\n"
     "🏆 /top — топ участников чата\n"
     "📅 /weektop — топ прироста за неделю\n"
     "🎉 /dickofday — писюн дня\n"
@@ -122,6 +125,10 @@ async def cmd_inventory(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _reply(update, handlers.cmd_inventory(_chat_key(update), update.effective_user))
 
 
+async def cmd_boss(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _reply(update, handlers.cmd_boss(_chat_key(update), update.effective_user))
+
+
 async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _reply(update, handlers.cmd_top(_chat_key(update)))
 
@@ -147,6 +154,24 @@ async def cmd_casino(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # --- Проактивные события ----------------------------------------------------
+
+async def spawn_bosses(context: ContextTypes.DEFAULT_TYPE):
+    """Заспавнить босса во всех активных чатах без активного босса."""
+    for chat in database.get_active_chats():
+        chat_id = chat["chat_id"]
+        try:
+            if database.get_active_boss(chat_id):
+                continue
+            active, is_new = boss.summon(chat_id)
+            if not is_new:
+                continue
+            text, markup = handlers.boss_message(active)
+            await context.bot.send_message(int(chat_id), text,
+                                           parse_mode=ParseMode.HTML,
+                                           reply_markup=markup)
+        except Exception:  # noqa: BLE001
+            logger.exception("Не удалось заспавнить босса в чате %s", chat_id)
+
 
 async def auto_dick_of_day(context: ContextTypes.DEFAULT_TYPE):
     """Выбрать писюна дня во всех активных чатах (запускается в полночь)."""

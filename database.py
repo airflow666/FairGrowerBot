@@ -170,6 +170,33 @@ def init_db():
             )
         """)
 
+        # Боссы чата (общий HP-пул на чат)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS bosses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_key TEXT,
+                name TEXT,
+                emoji TEXT,
+                max_hp INTEGER,
+                hp INTEGER,
+                status TEXT DEFAULT 'active',
+                spawned_at TIMESTAMP,
+                defeated_at TIMESTAMP
+            )
+        """)
+
+        # Вклад игроков в бой с боссом (урон, кулдаун)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS boss_hits (
+                boss_id INTEGER,
+                user_id INTEGER,
+                damage INTEGER DEFAULT 0,
+                hits INTEGER DEFAULT 0,
+                last_hit_at TIMESTAMP,
+                PRIMARY KEY (boss_id, user_id)
+            )
+        """)
+
         # Миграции для БД, созданных прежними версиями бота
         _ensure_column(conn, "user_sizes", "max_size", "INTEGER DEFAULT 0")
         _ensure_column(conn, "user_sizes", "grow_streak", "INTEGER DEFAULT 0")
@@ -769,3 +796,85 @@ def unequip_item(user_id, item_id):
             "UPDATE player_items SET equipped = 0 WHERE id = ? AND user_id = ?",
             (item_id, user_id),
         )
+
+
+# --- Боссы ------------------------------------------------------------------
+
+def get_active_boss(chat_key):
+    """Активный босс чата или ``None``."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM bosses WHERE chat_key = ? AND status = 'active' "
+            "ORDER BY id DESC LIMIT 1",
+            (str(chat_key),),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def spawn_boss(chat_key, name, emoji, max_hp):
+    """Заспавнить босса, если в чате нет активного. Вернуть id или ``None``."""
+    with _connect() as conn:
+        active = conn.execute(
+            "SELECT 1 FROM bosses WHERE chat_key = ? AND status = 'active'",
+            (str(chat_key),),
+        ).fetchone()
+        if active:
+            return None
+        cur = conn.execute(
+            """INSERT INTO bosses (chat_key, name, emoji, max_hp, hp, status, spawned_at)
+               VALUES (?, ?, ?, ?, ?, 'active', ?)""",
+            (str(chat_key), name, emoji, max_hp, max_hp, utils.now().isoformat()),
+        )
+        return cur.lastrowid
+
+
+def get_boss_hit(boss_id, user_id):
+    """Запись о вкладе игрока в бой (для кулдауна) или ``None``."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM boss_hits WHERE boss_id = ? AND user_id = ?",
+            (boss_id, user_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def apply_boss_hit(boss_id, user_id, damage):
+    """Нанести урону боссу (атомарно) и учесть вклад. Возвращает новый HP."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE bosses SET hp = hp - ? WHERE id = ? AND status = 'active'",
+            (damage, boss_id),
+        )
+        conn.execute(
+            """INSERT INTO boss_hits (boss_id, user_id, damage, hits, last_hit_at)
+               VALUES (?, ?, ?, 1, ?)
+               ON CONFLICT(boss_id, user_id) DO UPDATE
+                 SET damage = damage + excluded.damage,
+                     hits = hits + 1,
+                     last_hit_at = excluded.last_hit_at""",
+            (boss_id, user_id, damage, utils.now().isoformat()),
+        )
+        row = conn.execute("SELECT hp FROM bosses WHERE id = ?", (boss_id,)).fetchone()
+    return int(row["hp"]) if row else 0
+
+
+def defeat_boss(boss_id):
+    """Атомарно пометить босса поверженным. True, если это сделали мы."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE bosses SET status = 'defeated', defeated_at = ? "
+            "WHERE id = ? AND status = 'active'",
+            (utils.now().isoformat(), boss_id),
+        )
+        return cur.rowcount > 0
+
+
+def get_boss_contributors(boss_id):
+    """Участники боя, отсортированные по нанесённому урону (убыв.)."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT user_id, damage, hits FROM boss_hits WHERE boss_id = ? "
+            "ORDER BY damage DESC",
+            (boss_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]

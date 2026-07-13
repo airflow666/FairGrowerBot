@@ -20,7 +20,7 @@ from telegram.ext import ContextTypes
 
 import config
 import database
-from game import character, classes, expeditions, leveling, loot
+from game import boss, character, classes, expeditions, leveling, loot
 from utils import format_mention
 
 logger = logging.getLogger(__name__)
@@ -33,6 +33,7 @@ MENU = [
     ("profile", "👤 Профиль", "Персонаж, класс, уровень"),
     ("expedition", "🗺️ Экспедиция", "Отправить героя за добычей"),
     ("inventory", "🎒 Инвентарь", "Предметы и экипировка"),
+    ("boss", "🐉 Босс", "Сразиться с боссом чата"),
     ("top", "🏆 Top", "Топ участников"),
     ("weektop", "📅 Топ недели", "Прирост за 7 дней"),
     ("dickofday", "🎉 Dick Of Day", "Писюн дня"),
@@ -122,6 +123,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _claim_expedition(query, context, chat_key)
         elif data.startswith("equip_"):
             await _equip_item(query, context, chat_key, int(data.rsplit("_", 1)[1]))
+        elif data == "boss_hit":
+            await _boss_hit(query, context, chat_key)
         elif data == "link_stats":
             # Связка chat_instance ↔ chat_id уже выполнена в _chat_key выше
             await query.edit_message_text(
@@ -147,6 +150,7 @@ async def _run_command(query, context, chat_key, cmd):
         "profile": lambda: cmd_profile(chat_key, user),
         "expedition": lambda: cmd_expedition(chat_key, user),
         "inventory": lambda: cmd_inventory(chat_key, user),
+        "boss": lambda: cmd_boss(chat_key, user),
         "top": lambda: cmd_top(chat_key),
         "weektop": lambda: cmd_weektop(chat_key),
         "dickofday": lambda: cmd_dickofday(chat_key),
@@ -509,6 +513,65 @@ async def _equip_item(query, context, chat_key, item_id):
         return
     text, markup = cmd_inventory(chat_key, user)
     await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+
+
+# --- Боссы ------------------------------------------------------------------
+
+def boss_message(active_boss):
+    """Карточка босса с полосой HP и кнопкой удара."""
+    hp = max(0, int(active_boss["hp"]))
+    bar = _progress_bar(hp, active_boss["max_hp"])
+    text = (
+        f"{active_boss['emoji']} <b>{active_boss['name']}</b>\n\n"
+        f"❤️ HP: {bar}  {hp}/{active_boss['max_hp']}\n\n"
+        f"Бейте босса вместе! Награда — по вкладу урона."
+    )
+    markup = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("⚔️ Ударить", callback_data="boss_hit")]]
+    )
+    return text, markup
+
+
+def cmd_boss(chat_key, user):
+    active, _is_new = boss.summon(chat_key)
+    return boss_message(active)
+
+
+def _boss_defeat_text(result):
+    b = result["boss"]
+    lines = [
+        f"💥 <b>{b['emoji']} {b['name']} повержен!</b>\n",
+        "🏆 <b>Награды по вкладу урона:</b>",
+    ]
+    for r in result["rewards"][:5]:
+        player = database.get_or_create_player(r["user_id"])
+        name = format_mention(player["user_id"], player["username"],
+                              player["first_name"])
+        crown = "👑 " if r["top"] else ""
+        lines.append(f"{crown}{name}: {loot.item_label(r['item'])}  🪙 +{r['coins']}")
+    return "\n".join(lines)
+
+
+async def _boss_hit(query, context, chat_key):
+    result = boss.hit(query.from_user.id, chat_key)
+    status = result["status"]
+
+    if status == "no_boss":
+        await query.answer("Босс уже повержен!", show_alert=True)
+    elif status == "cooldown":
+        mins = int(result["left"] // 60) + 1
+        await query.answer(f"Ты уже бил. Отдышись ~{mins} мин.", show_alert=True)
+    elif status == "hit":
+        await query.answer(f"⚔️ Урон: {result['damage']}")
+        updated = dict(result["boss"])
+        updated["hp"] = result["hp"]
+        text, markup = boss_message(updated)
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                      reply_markup=markup)
+    elif status == "killed":
+        await query.answer("💥 БОСС ПОВЕРЖЕН!")
+        await query.edit_message_text(_boss_defeat_text(result),
+                                      parse_mode=ParseMode.HTML)
 
 
 def cmd_duel(chat_key, user):
