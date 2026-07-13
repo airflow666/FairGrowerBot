@@ -26,12 +26,15 @@ _IN_CHAT = {
 WELCOME_TEXT = (
     "🍆 <b>Привет! Я FairGrowerBot.</b>\n\n"
     "Теперь можно играть прямо в группе командами:\n"
+    "🎮 /menu — <b>единое меню: вся игра в одном сообщении</b>\n"
     "📈 /grow — вырастить пиписю (раз в сутки)\n"
     "👤 /profile — персонаж: класс, уровень, статы\n"
     "🗺️ /expedition — отправить героя за добычей\n"
     "🎒 /inventory — предметы и экипировка\n"
     "🐉 /boss — сразиться с боссом чата\n"
     "🏰 /dungeon — рискнуть в подземелье\n"
+    "🏪 /shop — магазин: сундуки и смена класса\n"
+    "🏡 /farm — пассивный доход\n"
     "🏆 /top — топ участников\n"
     "📅 /weektop — топ прироста за неделю\n"
     "🎉 /dickofday — писюн дня\n"
@@ -44,12 +47,15 @@ WELCOME_TEXT = (
 
 HELP_TEXT = (
     "🍆 <b>Команды FairGrowerBot:</b>\n\n"
+    "🎮 /menu — <b>единое меню: вся игра в одном сообщении</b>\n"
     "📈 /grow — вырастить пиписю (раз в сутки)\n"
     "👤 /profile — персонаж: класс, уровень, статы\n"
     "🗺️ /expedition — отправить героя за добычей\n"
     "🎒 /inventory — предметы и экипировка\n"
     "🐉 /boss — сразиться с боссом чата\n"
     "🏰 /dungeon — рискнуть в подземелье\n"
+    "🏪 /shop — магазин: сундуки и смена класса\n"
+    "🏡 /farm — пассивный доход\n"
     "🏆 /top — топ участников чата\n"
     "📅 /weektop — топ прироста за неделю\n"
     "🎉 /dickofday — писюн дня\n"
@@ -111,6 +117,11 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(HELP_TEXT, parse_mode=ParseMode.HTML)
 
 
+async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Единое меню: вся игра в одном сообщении, навигация кнопками."""
+    await _reply(update, handlers.cmd_menu(_chat_key(update), update.effective_user))
+
+
 async def cmd_grow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _reply(update, handlers.cmd_grow(_chat_key(update), update.effective_user))
 
@@ -133,6 +144,14 @@ async def cmd_boss(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_dungeon(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _reply(update, handlers.cmd_dungeon(_chat_key(update), update.effective_user))
+
+
+async def cmd_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _reply(update, handlers.cmd_shop(_chat_key(update), update.effective_user))
+
+
+async def cmd_farm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _reply(update, handlers.cmd_farm(_chat_key(update), update.effective_user))
 
 
 async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
