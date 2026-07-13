@@ -107,29 +107,29 @@ cd /path/to/FairGrowerBot
 SERVICE=fairdickbot ./deploy/upgrade.sh   # если сервис не определился сам
 ```
 
-### systemd
+### systemd (автозапуск)
 
-```ini
-[Unit]
-Description=FairDickGrowerBot Telegram Bot
-After=network.target
-
-[Service]
-Type=simple
-User=ubuntu
-WorkingDirectory=/path/to/FairGrowerBot
-ExecStart=/path/to/python main.py
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
+Проще всего — скрипт установки: он подставит в шаблон `deploy/fairdickbot.service`
+вашего пользователя, путь к репозиторию и интерпретатор (venv, если есть),
+поставит юнит и включит автозапуск:
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now fairdickbot
+cd /path/to/FairGrowerBot
+sudo ./deploy/install-service.sh
 ```
+
+После этого `deploy/upgrade.sh` сам увидит сервис и будет им управлять.
+
+Управление:
+
+```bash
+sudo systemctl status fairdickbot
+sudo systemctl restart fairdickbot
+journalctl -u fairdickbot -f        # логи
+```
+
+Шаблон юнита лежит в `deploy/fairdickbot.service` — при желании его можно
+заполнить и установить вручную.
 
 ---
 

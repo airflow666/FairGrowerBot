@@ -1,0 +1,29 @@
+# systemd-юнит для FairGrowerBot.
+#
+# Плейсхолдеры __USER__, __WORKDIR__, __PYTHON__ подставляются скриптом
+# deploy/install-service.sh. Можно заполнить и вручную, затем скопировать в
+# /etc/systemd/system/fairdickbot.service
+#
+# Токен читается ботом из файла .env в __WORKDIR__ (через python-dotenv).
+
+[Unit]
+Description=FairDickGrowerBot Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__WORKDIR__
+ExecStart=__PYTHON__ __WORKDIR__/main.py
+Restart=always
+RestartSec=10
+
+# Мягкое усиление безопасности (рабочая папка и .db остаются записываемыми)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+
+[Install]
+WantedBy=multi-user.target

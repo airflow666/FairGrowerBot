@@ -186,6 +186,11 @@ detect_service() {
             return
         fi
     done
+    # Фолбэк: юнит по умолчанию установлен через install-service.sh, но не запущен
+    if systemctl cat fairdickbot.service >/dev/null 2>&1; then
+        echo "fairdickbot"
+        return
+    fi
     echo ""
 }
 
