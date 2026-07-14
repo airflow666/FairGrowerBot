@@ -35,3 +35,11 @@ def format_mention(user_id, username=None, first_name=None) -> str:
     if first_name:
         return f'<a href="tg://user?id={user_id}">{html.escape(str(first_name))}</a>'
     return f"User{user_id}"
+
+
+def title_for(size) -> str:
+    """Титул по длине (чатовой): «🍆 Уважаемый Шланг»."""
+    for threshold, emoji, name in config.TITLES:
+        if size >= threshold:
+            return f"{emoji} {name}"
+    return ""

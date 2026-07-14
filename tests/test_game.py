@@ -43,14 +43,14 @@ def test_progress_within_level(env):
 
 def test_stats_distribution_by_class(env):
     _, _, classes, _ = env
-    # На 11 уровне: 10 уровней * 3 очка = 30 очков
-    giga = classes.stats_for(11, "giga")     # веса 0.6/0.2/0.2
-    assert giga["strength"] == 5 + 18        # база 5 + round(30*0.6)
-    assert giga["vitality"] == 5 + 6
-    assert giga["luck"] == 5 + 6
-    # Без класса — равномерно
+    # Гигачлен вкладывается в Силу — она заметно выше базы и прочих статов
+    giga = classes.stats_for(11, "giga")
+    assert giga["strength"] > 5
+    assert giga["strength"] > giga["vitality"]
+    assert giga["strength"] > giga["luck"]
+    # Без класса — равномерно по всем 5 статам
     none = classes.stats_for(11, None)
-    assert none["strength"] == none["vitality"] == none["luck"]
+    assert len(set(none.values())) == 1
 
 
 def test_level_1_is_base_stats(env):
@@ -81,10 +81,10 @@ def test_duel_win_chance_clamped(env):
     # Прокачиваем игрока 1 до высокого уровня, игрок 2 — новичок
     character.grant_exp(1, 100000)
     character.set_class(1, "giga")
-    chance = character.duel_win_chance(1, 2)
+    chance = character.duel_win_chance(1, 2, "c")
     assert chance <= 0.65                      # ограничено сверху
     # Обратный расклад — ограничено снизу
-    assert character.duel_win_chance(2, 1) >= 0.35
+    assert character.duel_win_chance(2, 1, "c") >= 0.35
 
 
 def test_coins_adjust(env):
@@ -92,3 +92,18 @@ def test_coins_adjust(env):
     database.get_or_create_player(1)
     assert database.adjust_player_coins(1, 50) == 50
     assert database.adjust_player_coins(1, -20) == 30
+
+
+def test_length_influences_duel(env):
+    database, _, _, character = env
+    # Равные персонажи, но у игрока 1 длина сильно больше -> шанс выше 0.5
+    database.add_user_size(1, "c", 500)
+    base = character.duel_win_chance(1, 2, "c")
+    assert base > 0.5
+
+
+def test_title_by_length(env):
+    import utils
+    assert "Корнишон" in utils.title_for(50)
+    assert "Микропенис" in utils.title_for(-5)
+    assert "Орбитальный" in utils.title_for(3000)

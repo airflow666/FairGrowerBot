@@ -30,15 +30,24 @@ from game import (
     leveling,
     loot,
 )
-from utils import format_mention
+from utils import format_mention, title_for
 
 logger = logging.getLogger(__name__)
 
 THUMB_URL = "https://img.icons8.com/emoji/48/000000/eggplant-emoji.png"
 
-# Экраны единого меню: (id, кнопка). Порядок задаёт раскладку хаба.
-MENU = [
-    ("grow", "📈 Grow"),
+# Главное меню — только классика ради которой чат и живёт (+ вход в RPG).
+MAIN_MENU = [
+    ("grow", "📈 Вырастить"),
+    ("top", "🏆 Топ"),
+    ("dickofday", "🎉 Писюн дня"),
+    ("duel", "⚔️ Дуэль"),
+    ("casino", "🎰 Казино"),
+    ("stats", "📊 Стата"),
+]
+
+# Второй этаж — вся RPG, чтобы не пугать тех, кто пришёл просто поржать.
+RPG_MENU = [
     ("profile", "👤 Профиль"),
     ("expedition", "🗺️ Экспедиция"),
     ("inventory", "🎒 Инвентарь"),
@@ -46,12 +55,7 @@ MENU = [
     ("dungeon", "🏰 Подземелье"),
     ("shop", "🏪 Магазин"),
     ("farm", "🏡 Ферма"),
-    ("duel", "⚔️ Дуэль"),
-    ("casino", "🎰 Казино"),
-    ("top", "🏆 Топ"),
     ("weektop", "📅 Топ недели"),
-    ("dickofday", "🎉 Писюн дня"),
-    ("stats", "📊 Статистика"),
     ("info", "ℹ️ Помощь"),
 ]
 
@@ -192,10 +196,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "link_stats":
             # Связка chat_instance ↔ chat_id уже выполнена в _chat_key выше
             await query.edit_message_text(
-                "✅ <b>Чат активирован!</b>\n\n"
-                "Команды теперь работают и в группе (/grow, /top, /duel, /casino, "
-                "/stats), а «писюн дня» будет выбираться автоматически в полночь. "
-                "Старая статистика подключена.",
+                "✅ <b>Чат активирован!</b>\n"
+                "Жми /menu — там вся движуха. Писюн дня выберется сам в полночь, "
+                "а старая статистика подхвачена.",
                 parse_mode=ParseMode.HTML,
             )
     except Exception:  # noqa: BLE001 — не роняем event loop из-за одной кнопки
@@ -206,10 +209,15 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _answer(query)
 
 
+# Экраны, живущие во втором этаже (RPG) — для контекстной кнопки «назад».
+RPG_SCREENS = {sid for sid, _ in RPG_MENU} | {"craft"}
+
+
 def _screen(chat_key, user, screen):
     """Отрисовать экран по коду. Возвращает (text, markup) или None."""
     screens = {
         "menu": lambda: cmd_menu(chat_key, user),
+        "rpg": lambda: cmd_rpg(chat_key, user),
         "grow": lambda: cmd_grow(chat_key, user),
         "profile": lambda: cmd_profile(chat_key, user),
         "expedition": lambda: cmd_expedition(chat_key, user),
@@ -233,42 +241,57 @@ def _screen(chat_key, user, screen):
     return _as_pair(render())
 
 
-def _menu_row(owner_id):
-    """Кнопка возврата в меню владельца."""
-    return [InlineKeyboardButton("⬅️ Меню", callback_data=f"nav_{owner_id}_menu")]
+def _menu_row(owner_id, dest="menu"):
+    """Кнопка возврата: в главное меню или в RPG-хаб."""
+    label = "⬅️ Меню" if dest == "menu" else "⬅️ Назад"
+    return [InlineKeyboardButton(label, callback_data=f"nav_{owner_id}_{dest}")]
 
 
-def _with_back(markup, owner_id):
-    """Добавить к клавиатуре экрана строку «⬅️ Меню»."""
+def _with_back(markup, owner_id, dest="rpg"):
+    """Добавить к клавиатуре строку «назад» (по умолчанию — в RPG-хаб)."""
     rows = list(markup.inline_keyboard) if markup else []
-    return InlineKeyboardMarkup([*rows, _menu_row(owner_id)])
+    return InlineKeyboardMarkup([*rows, _menu_row(owner_id, dest)])
 
 
-def cmd_menu(chat_key, user):
-    """Хаб единого меню: все экраны — кнопками, владелец зашит в callback."""
-    player = character.get_or_create(user.id, user.username, user.first_name)
-    size = database.get_user_size(user.id, chat_key)
-    name = format_mention(user.id, user.username, user.first_name)
-    text = (
-        f"🎮 <b>Меню</b> — {name}\n\n"
-        f"⭐ Уровень {player['level']}  🪙 {int(player['coins'])} монет  "
-        f"📏 {size} см\n\n"
-        f"Выбери раздел (кнопки работают только для тебя):"
-    )
+def _menu_grid(items, owner_id):
     rows, row = [], []
-    for screen_id, label in MENU:
+    for screen_id, label in items:
         row.append(InlineKeyboardButton(label,
-                                        callback_data=f"nav_{user.id}_{screen_id}"))
+                                        callback_data=f"nav_{owner_id}_{screen_id}"))
         if len(row) == 2:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
+    return rows
+
+
+def cmd_menu(chat_key, user):
+    """Главное меню: классика + вход в RPG. Кратко, без стены текста."""
+    player = character.get_or_create(user.id, user.username, user.first_name)
+    size = database.get_user_size(user.id, chat_key)
+    name = format_mention(user.id, user.username, user.first_name)
+    text = (
+        f"🍆 <b>Меню</b> — {name}\n"
+        f"{title_for(size)} · 📏 {size} см · 🪙 {int(player['coins'])}"
+    )
+    rows = _menu_grid(MAIN_MENU, user.id)
+    rows.append([InlineKeyboardButton("🎮 RPG ▸", callback_data=f"nav_{user.id}_rpg")])
     return text, InlineKeyboardMarkup(rows)
 
 
+def cmd_rpg(chat_key, user):
+    """Второй этаж — RPG-разделы."""
+    player = character.get_or_create(user.id, user.username, user.first_name)
+    text = (
+        f"🎮 <b>RPG</b> — ⭐ ур. {player['level']} · 🪙 {int(player['coins'])}\n"
+        f"Прокачка, лут, боссы и подземелья:"
+    )
+    return text, InlineKeyboardMarkup(_menu_grid(RPG_MENU, user.id))
+
+
 async def _nav(query, context, chat_key, payload):
-    """Навигация по единому меню: nav_{owner_id}_{screen}."""
+    """Навигация по меню: nav_{owner_id}_{screen}."""
     owner_str, _, screen = payload.partition("_")
     try:
         owner_id = int(owner_str)
@@ -276,15 +299,17 @@ async def _nav(query, context, chat_key, payload):
         return
     user = query.from_user
     if user.id != owner_id:
-        await _answer(query, "Это не твоё меню! Открой своё: @бот → Меню",
-                      alert=True)
+        await _answer(query, "Это не твоё меню! Позови бота себе: @бот", alert=True)
         return
     rendered = _screen(chat_key, user, screen)
     if rendered is None:
         return
     text, markup = rendered
-    if screen != "menu":
-        markup = _with_back(markup, owner_id)
+    if screen == "rpg":
+        markup = _with_back(markup, owner_id, dest="menu")
+    elif screen != "menu":
+        dest = "rpg" if screen in RPG_SCREENS else "menu"
+        markup = _with_back(markup, owner_id, dest=dest)
     await query.edit_message_text(text, parse_mode=ParseMode.HTML,
                                   reply_markup=markup)
 
@@ -313,21 +338,20 @@ def cmd_grow(chat_key, user):
                                  username=user.username, first_name=user.first_name)
     if result is None:
         return (
-            f"📈 Ты уже увеличивал сегодня, {user.first_name}!\n"
-            f"Приходи после 00:00 🕛"
+            f"⏳ На сегодня всё, {user.first_name}. Откат до 00:00 🕛"
         )
 
     change = result["change"]
     new_size = result["new_size"]
     if change > 0:
-        text = f"📈 Твоя пипися выросла на <b>+{change} см</b>!"
+        text = f"📈 Разрабы бафнули! <b>+{change} см</b>, имба!"
     elif change < 0:
-        text = f"📉 Твоя пипися уменьшилась на <b>{change} см</b>!"
+        text = f"📉 Понерфили в патче: <b>{change} см</b>. RIP."
     else:
-        text = "➡️ Твоя пипися осталась без изменений!"
-    text += f"\n📏 Текущий размер: <b>{new_size} см</b>"
+        text = "➡️ Патч без изменений — стоит как стоял."
+    text += f"\n📏 Теперь: <b>{new_size} см</b> · {title_for(new_size)}"
     if result["streak"] > 1:
-        text += f"\n🔥 Серия: {result['streak']} дн. подряд"
+        text += f"\n🔥 Дрочу {result['streak']} дн. подряд"
 
     codes = ["first_grow"]
     if new_size >= 100:
@@ -346,20 +370,21 @@ def cmd_grow(chat_key, user):
                               user.username, user.first_name)
     text += f"\n✨ +{exp['gained']} XP"
     if exp["level_up"] > 0:
-        text += f"\n🎉 Новый уровень: <b>{exp['level']}</b>!"
+        text += f"\n🎉 Апнул {exp['level']} левел, тащер!"
     return text
 
 
 def cmd_top(chat_key):
     top = database.get_chat_top(chat_key, limit=10)
     if not top:
-        return "🏆 Пока никто не увеличивал свою пиписю!\nИспользуй Grow первым 🍆"
+        return "🏆 Пусто. Все импотенты. Расти первым 🍆"
 
-    msg = "🏆 <b>ТОП самых огромных писюнов:</b>\n\n"
+    msg = "🏆 <b>ТОП ЕЛДАКОВ ЧАТА:</b>\n\n"
     for i, u in enumerate(top, 1):
         name = format_mention(u["user_id"], u["username"], u["first_name"])
         medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
-        msg += f"{medal} {name}: {int(u['size'])} см\n"
+        size = int(u["size"])
+        msg += f"{medal} {name} — {size} см · {title_for(size)}\n"
     return msg
 
 
@@ -367,9 +392,9 @@ def cmd_weektop(chat_key):
     top = database.get_weekly_top(chat_key, limit=10)
     top = [u for u in top if u["gain"]]
     if not top:
-        return "📅 За последнюю неделю ещё никто не рос!\nИспользуй Grow 🍆"
+        return "📅 За неделю никто не подрос. Патч застоя 🍆"
 
-    msg = "📅 <b>Топ прироста за неделю:</b>\n\n"
+    msg = "📅 <b>Кто больше всех надрочил за неделю:</b>\n\n"
     for i, u in enumerate(top, 1):
         name = format_mention(u["user_id"], u["username"], u["first_name"])
         medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
@@ -385,21 +410,19 @@ def cmd_dickofday(chat_key):
         name = format_mention(current["user_id"], current["username"],
                               current["first_name"])
         return (
-            f"🎉 <b>Писюн дня уже выбран!</b>\n\n"
-            f"🏆 {name}\n"
-            f"🎁 Бонус: <b>+{current['bonus']} см</b>\n"
-            f"📏 Размер: <b>{int(current['old_size'])} → {int(current['new_size'])} см</b>"
+            f"🎉 <b>Писюн дня уже выбран!</b>\n"
+            f"🏆 {name} — фартанул на <b>+{current['bonus']} см</b> "
+            f"({int(current['old_size'])} → {int(current['new_size'])})"
         )
 
     result = database.set_dick_of_day(chat_key)
     if not result:
-        return "😔 Нет участников, чтобы выбрать писюна дня!\nИспользуй Grow первым 🍆"
+        return "😔 Некого короновать — в чате одни импотенты. Расти 🍆"
 
     name = format_mention(result["user_id"], result["username"], result["first_name"])
     text = (
-        f"🎉 <b>Писюн дня:</b> {name}!\n"
-        f"🎁 Бонус: <b>+{result['bonus']} см</b>\n"
-        f"📏 Новый размер: <b>{result['new_size']} см</b>"
+        f"🎉 <b>Писюн дня — {name}!</b>\n"
+        f"🎲 Рандом накинул <b>+{result['bonus']} см</b> → {result['new_size']} см"
     )
     text += _achievement_suffix(result["user_id"], chat_key, ["dick_of_day"])
     return text
@@ -452,18 +475,16 @@ def cmd_profile(chat_key, user):
     name = format_mention(user.id, user.username, user.first_name)
     size = database.get_user_size(user.id, chat_key)
 
-    stat_lines = "\n".join(
-        f"{config.STATS[s][0]} {config.STATS[s][1]}: <b>{stats[s]}</b> "
-        f"— <i>{config.STATS[s][2]}</i>"
-        for s in config.STATS
+    # На экране — кратко (статы без методички; что делает стат — в Помощи)
+    stat_lines = "  ".join(
+        f"{config.STATS[s][0]}{stats[s]}" for s in config.STATS
     )
     text = (
-        f"👤 <b>Профиль</b> {name}\n\n"
-        f"🎖️ Класс: {classes.class_name(player['klass'])}\n"
-        f"⭐ Уровень {level}  {_progress_bar(into, need)}  {into}/{need} XP\n\n"
-        f"{stat_lines}\n\n"
-        f"🪙 Монеты: {int(player['coins'])}\n"
-        f"📏 Размер в этом чате: {size} см"
+        f"👤 <b>{name}</b> — {classes.class_name(player['klass'])}\n"
+        f"⭐ Ур. {level}  {_progress_bar(into, need)}  {into}/{need} XP\n"
+        f"{stat_lines}\n"
+        f"🪙 {int(player['coins'])} монет · 📏 {size} см ({title_for(size)})\n"
+        f"<i>Персонаж общий для всех чатов, длина — местная</i>"
     )
     markup = None
     if not player["klass"]:
@@ -544,14 +565,16 @@ async def _start_expedition(query, context, chat_key, zone_code):
         await _answer(query, result, alert=True)
         return
     zone = config.ZONES[zone_code]
+    # Реальная длительность с учётом Скорости (её же ждёт и джоба возврата)
+    player = database.get_or_create_player(user.id)
+    duration = expeditions.effective_duration(player, zone)
     await query.edit_message_text(
-        f"🗺️ <b>Герой отправился в экспедицию!</b>\n\n"
-        f"{zone['emoji']} {zone['name']}\n"
-        f"⏳ Вернётся через {_format_duration(zone['duration'])}",
+        f"🗺️ <b>Погнал в {zone['name']}!</b>\n"
+        f"⏳ Вернётся через {_format_duration(duration)}",
         parse_mode=ParseMode.HTML,
         reply_markup=_with_back(None, user.id),
     )
-    _schedule_expedition_return(context, chat_key, zone["duration"])
+    _schedule_expedition_return(context, chat_key, duration)
 
 
 def _item_full(instance):
@@ -730,17 +753,17 @@ def boss_message(active_boss, owner_id=None):
     hp = max(0, int(active_boss["hp"]))
     bar = _progress_bar(hp, active_boss["max_hp"])
     text = (
-        f"{active_boss['emoji']} <b>{active_boss['name']}</b>\n\n"
-        f"❤️ HP: {bar}  {hp}/{active_boss['max_hp']}\n\n"
-        f"Бейте босса вместе! Награда — по вкладу урона."
+        f"{active_boss['emoji']} <b>{active_boss['name']}</b>\n"
+        f"❤️ {bar}  {hp}/{active_boss['max_hp']}\n"
+        f"Пиздим толпой — лут по вкладу урона."
     )
     contributors = database.get_boss_contributors(active_boss["id"])
     if contributors:
-        text += "\n\n<b>Вклад урона:</b>\n"
+        text += "\n\n<b>Кто как насаживает:</b>\n"
         for c in contributors[:5]:
             p = database.get_or_create_player(c["user_id"])
             cname = format_mention(p["user_id"], p["username"], p["first_name"])
-            text += f"⚔️ {cname} — {int(c['damage'])}\n"
+            text += f"🩸 {cname} — {int(c['damage'])}\n"
     hit_data = f"boss_hit_{owner_id}" if owner_id else "boss_hit"
     markup = InlineKeyboardMarkup(
         [[InlineKeyboardButton("⚔️ Ударить", callback_data=hit_data)]]
@@ -756,14 +779,14 @@ def cmd_boss(chat_key, user):
 def _boss_defeat_text(result):
     b = result["boss"]
     lines = [
-        f"💥 <b>{b['emoji']} {b['name']} повержен!</b>\n",
-        "🏆 <b>Награды по вкладу урона:</b>",
+        f"💥 <b>{b['emoji']} {b['name']} затащен!</b>",
+        "🏆 <b>Лут по вкладу:</b>",
     ]
     for r in result["rewards"][:5]:
         player = database.get_or_create_player(r["user_id"])
         name = format_mention(player["user_id"], player["username"],
                               player["first_name"])
-        crown = "👑 " if r["top"] else ""
+        crown = "👑 РАМПАГА " if r["top"] else ""
         lines.append(f"{crown}{name}: {_item_full(r['item'])}  🪙 +{r['coins']}")
     return "\n".join(lines)
 
@@ -773,13 +796,13 @@ async def _boss_hit(query, context, chat_key, owner_id=None):
     status = result["status"]
 
     if status == "no_boss":
-        await _answer(query, "Босс уже повержен!", alert=True)
+        await _answer(query, "Поздно, босса уже затащили без тебя.", alert=True)
     elif status == "cooldown":
         mins = int(result["left"] // 60) + 1
-        await _answer(query, f"Ты уже бил. Отдышись ~{mins} мин.", alert=True)
+        await _answer(query, f"На кулдауне. Реген ещё ~{mins} мин.", alert=True)
     elif status == "hit":
         crit = " 💥КРИТ!" if result.get("crit") else ""
-        await _answer(query, f"⚔️ Урон: {result['damage']}{crit}")
+        await _answer(query, f"🩸 Насадил на {result['damage']}{crit}")
         updated = dict(result["boss"])
         updated["hp"] = result["hp"]
         text, markup = boss_message(updated, owner_id=owner_id)
@@ -871,11 +894,10 @@ async def _dungeon_deeper(query, context, owner_id):
         await _answer(query, "Забег уже завершён.", alert=True)
         return
     if status == "dead":
-        await _answer(query, "💀 Ты погиб!", alert=True)
+        await _answer(query, "💀 Ты зафидил!", alert=True)
         await query.edit_message_text(
-            f"💀 <b>Ты погиб на глубине {result['depth']}!</b>\n\n"
-            f"Ловушка нанесла {result['damage']} урона.\n"
-            f"Вся добыча и плата за вход потеряны. 🪦",
+            f"💀 <b>Слился на глубине {result['depth']}.</b>\n"
+            f"Ловушка выбила {result['damage']} — вся добыча ушла крипам. 🪦",
             parse_mode=ParseMode.HTML,
             reply_markup=_with_back(None, owner_id),
         )
@@ -885,9 +907,9 @@ async def _dungeon_deeper(query, context, owner_id):
     if status == "trap":
         await _answer(query, f"🪤 Ловушка! -{result['damage']} HP")
     elif result.get("found_item"):
-        await _answer(query, f"🎁 Комната с добычей! +{result['gain']} монет")
+        await _answer(query, f"🎁 Тайник! +{result['gain']} 🪙 и лут")
     else:
-        await _answer(query, f"🪙 Пустая комната. +{result['gain']} монет")
+        await _answer(query, f"🪙 Пусто, только +{result['gain']} монет")
     await query.edit_message_text(text, parse_mode=ParseMode.HTML,
                                   reply_markup=_with_back(markup, owner_id))
 
@@ -903,12 +925,12 @@ async def _dungeon_leave(query, context, owner_id):
         return
     items_text = "\n".join(_item_full(i) for i in summary["items"]) or "—"
     text = (
-        f"🏰 <b>Вылазка окончена!</b>\nГлубина: {summary['depth']}\n\n"
-        f"🪙 Монет: +{summary['coins']}\n"
-        f"🎁 Добыча:\n{items_text}"
+        f"🏰 <b>Свалил живым с глубины {summary['depth']}!</b>\n"
+        f"🪙 +{summary['coins']} монет\n"
+        f"🎁 Хабар:\n{items_text}"
     )
     if summary["level_up"] > 0:
-        text += f"\n\n🎉 Новый уровень: <b>{summary['level']}</b>!"
+        text += f"\n\n🎉 Апнул {summary['level']} левел!"
     await query.edit_message_text(text, parse_mode=ParseMode.HTML,
                                   reply_markup=_with_back(None, owner_id))
 
@@ -1204,8 +1226,8 @@ async def _create_duel(query, context, chat_key, bet):
     size = database.get_user_size(user.id, chat_key)
     if bet > size:
         await query.edit_message_text(
-            f"⚠️ Твоя пипися всего {size} см.\nСтавка больше твоего размера!",
-            reply_markup=_with_back(None, user.id),
+            f"⚠️ У тебя всего {size} см — на такую ставку не наскребёшь.",
+            reply_markup=_with_back(None, user.id, dest="menu"),
         )
         return
 
@@ -1277,12 +1299,19 @@ async def _accept_duel(query, context, chat_key, duel_id):
     bet = int(duel["bet"])
 
     if accepter.id == challenger_id:
-        await _answer(query, "Ты не можешь принять свой же вызов!", alert=True)
+        await _answer(query, "Сам себя не выебешь. Жди оппонента.", alert=True)
         return
 
     if database.get_user_size(accepter.id, chat_key) < bet:
-        await _answer(query, "😢 Твоя пипися короче ставки! Возвращайся позже",
+        await _answer(query, "😢 Коротковат для такой ставки. Подрасти сначала.",
                       alert=True)
+        return
+
+    # Челленджер мог «слить» длину (обмен/другая дуэль) после создания вызова
+    if database.get_user_size(challenger_id, chat_key) < bet:
+        await _answer(query, "У вызвавшего уже нечем платить — вызов протух.",
+                      alert=True)
+        database.expire_duel(duel_id)
         return
 
     # Атомарный клейм: при гонке двух принявших выигрывает ровно один
@@ -1292,7 +1321,7 @@ async def _accept_duel(query, context, chat_key, duel_id):
 
     _cancel_duel_timeout(context, duel_id)
 
-    win_chance = character.duel_win_chance(challenger_id, accepter.id)
+    win_chance = character.duel_win_chance(challenger_id, accepter.id, chat_key)
     winner_id, loser_id = database.resolve_duel(challenger_id, accepter.id, chat_key,
                                                 bet, win_chance)
     database.get_or_create_user(accepter.id, chat_key, accepter.username,
@@ -1308,13 +1337,10 @@ async def _accept_duel(query, context, chat_key, duel_id):
     loser_name = accepter_name if winner_id == challenger_id else challenger_name
 
     text = (
-        f"⚔️ <b>РЕЗУЛЬТАТ ДУЭЛИ!</b>\n\n"
-        f"{challenger_name} VS {accepter_name}\n"
-        f"💰 Ставка: {bet} см\n\n"
-        f"🏆 Победитель: {winner_name}! (+{bet} см)\n"
-        f"💀 Проигравший: {loser_name}! (-{bet} см)\n\n"
-        f"✨ +{config.EXP_PER_DUEL_WIN} XP победителю, "
-        f"+{config.EXP_PER_DUEL_LOSS} XP проигравшему"
+        f"⚔️ <b>{challenger_name} VS {accepter_name}</b>\n"
+        f"Ставка: {bet} см\n\n"
+        f"🏆 {winner_name} — изи катка, +{bet} см!\n"
+        f"💀 {loser_name} — зарепорчен в Лоу Пипирку, -{bet} см"
     )
 
     wins = database.get_duel_stats(winner_id, chat_key)["wins"]
@@ -1346,9 +1372,9 @@ async def _play_casino(query, context, chat_key, bet):
     new_coins = economy.play_casino(user.id, bet, win)
     if win:
         prize = bet * (config.CASINO_WIN_MULTIPLIER - 1)
-        popup = f"🎉 ПОБЕДА! +{prize} 🪙 (теперь {new_coins})"
+        popup = f"🎉 ИЗИ КАТКА! +{prize} 🪙 (теперь {new_coins})"
     else:
-        popup = f"💀 МИМО! -{bet} 🪙 (теперь {new_coins})"
+        popup = f"💀 Прожал ульту в никуда. -{bet} 🪙 (теперь {new_coins})"
     # Результат — попапом, а панель ставок остаётся: можно крутить дальше
     # в том же сообщении, не роняя новые в чат.
     await _answer(query, popup, alert=True)
@@ -1356,6 +1382,6 @@ async def _play_casino(query, context, chat_key, bet):
     text, markup = rendered
     try:
         await query.edit_message_text(text, parse_mode=ParseMode.HTML,
-                                      reply_markup=_with_back(markup, user.id))
+                                      reply_markup=_with_back(markup, user.id, dest="menu"))
     except Exception:  # noqa: BLE001 — текст не изменился (тот же размер) — не страшно
         pass

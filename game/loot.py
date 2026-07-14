@@ -45,15 +45,19 @@ def _pick_template(rarity, rng=random):
 
 
 def build_item_stats(slot, rarity, rng=random) -> dict:
-    """Характеристики экземпляра: основной стат слота + вторичные (эпик+)."""
-    primary = config.SLOTS[slot][2]
-    mult = config.RARITIES[rarity][3]
-    stats = {primary: mult}
-    others = [s for s in config.STATS if s != primary]
-    secondary_value = max(1, round(mult * config.SECONDARY_FRACTION))
-    for _ in range(config.SECONDARY_STATS.get(rarity, 0)):
-        stat = rng.choice(others)
-        stats[stat] = stats.get(stat, 0) + secondary_value
+    """Характеристики экземпляра: случайные статы + бюджет очков по редкости.
+
+    Число статов и бюджет зависят от редкости; какие именно статы и как делится
+    бюджет — случайно. ``slot`` не влияет на статы (оставлен для совместимости).
+    """
+    lo, hi = config.ITEM_STAT_COUNT[rarity]
+    pool = list(config.STATS)
+    count = min(rng.randint(lo, hi), len(pool))
+    chosen = rng.sample(pool, count)
+    budget = config.ITEM_STAT_BUDGET[rarity]
+    stats = {stat: 1 for stat in chosen}          # каждому минимум 1
+    for _ in range(max(0, budget - count)):        # остаток раскидываем случайно
+        stats[rng.choice(chosen)] += 1
     return stats
 
 

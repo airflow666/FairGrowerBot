@@ -51,9 +51,13 @@ def _combat_power(player: dict) -> int:
     return effective_stats(player)["strength"] + player["level"]
 
 
-def duel_win_chance(challenger_id, accepter_id) -> float:
-    """Шанс победы вызвавшего дуэль, с учётом статов и ограничением коридором."""
+def duel_win_chance(challenger_id, accepter_id, chat_key) -> float:
+    """Шанс победы вызвавшего дуэль: статы + длина, в коридоре [MIN, MAX]."""
     a = database.get_or_create_player(challenger_id)
     b = database.get_or_create_player(accepter_id)
-    chance = 0.5 + config.DUEL_CHANCE_PER_POWER * (_combat_power(a) - _combat_power(b))
+    len_a = database.get_user_size(challenger_id, chat_key)
+    len_b = database.get_user_size(accepter_id, chat_key)
+    chance = (0.5
+              + config.DUEL_CHANCE_PER_POWER * (_combat_power(a) - _combat_power(b))
+              + 0.01 * (len_a - len_b) / config.DUEL_CM_PER_PERCENT)
     return max(config.DUEL_CHANCE_MIN, min(config.DUEL_CHANCE_MAX, chance))

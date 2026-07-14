@@ -1,7 +1,9 @@
 """Классы персонажа и вычисление характеристик (чистые функции)."""
 import config
 
-_DEFAULT_WEIGHTS = {"strength": 1 / 3, "vitality": 1 / 3, "luck": 1 / 3}
+_DEFAULT_WEIGHTS = {
+    "strength": 0.2, "vitality": 0.2, "luck": 0.2, "crit": 0.2, "speed": 0.2,
+}
 
 
 def get_class(code):

@@ -40,19 +40,23 @@ def test_luck_shifts_toward_rare(env):
     assert lucky > base  # с удачей чаще выпадает не-обычное
 
 
-def test_item_bonus_scales_with_rarity(env):
-    loot = env["loot"]
-    common = loot.build_item_stats("weapon", "common")
-    legend = loot.build_item_stats("weapon", "legendary")
-    assert common["strength"] < legend["strength"]
+def test_item_budget_scales_with_rarity(env):
+    loot, config = env["loot"], env["config"]
+    # Суммарные очки предмета равны бюджету редкости (больше у высоких тиров)
+    common = loot.build_item_stats("weapon", "common", rng=random.Random(1))
+    legend = loot.build_item_stats("weapon", "legendary", rng=random.Random(1))
+    assert sum(common.values()) == config.ITEM_STAT_BUDGET["common"]
+    assert sum(legend.values()) == config.ITEM_STAT_BUDGET["legendary"]
+    assert sum(common.values()) < sum(legend.values())
 
 
-def test_epic_rolls_secondary_stat(env):
-    loot = env["loot"]
-    # У эпика есть основной стат слота + хотя бы один вторичный
-    stats = loot.build_item_stats("weapon", "epic")
-    assert "strength" in stats
-    assert len(stats) >= 2
+def test_item_stats_are_random(env):
+    loot, config = env["loot"], env["config"]
+    # Число статов в пределах диапазона редкости; статы — из общего набора
+    stats = loot.build_item_stats("weapon", "epic", rng=random.Random(7))
+    lo, hi = config.ITEM_STAT_COUNT["epic"]
+    assert lo <= len(stats) <= hi
+    assert set(stats).issubset(set(config.STATS))
 
 
 def test_legacy_item_bonus_fallback(env):
