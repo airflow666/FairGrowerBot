@@ -46,7 +46,9 @@ def hit(user_id, chat_key, rng=random):
     player = database.get_or_create_player(user_id)
     stats = character.effective_stats(player)
     strength = stats["strength"]
-    damage = config.BOSS_BASE_DAMAGE + strength + rng.randint(0, strength)
+    # Длина имеет значение: +1 урона за каждые BOSS_DAMAGE_PER_CM см (чатовой)
+    length_bonus = database.get_user_size(user_id, chat_key) // config.BOSS_DAMAGE_PER_CM
+    damage = config.BOSS_BASE_DAMAGE + strength + length_bonus + rng.randint(0, strength)
     crit = rng.random() < min(config.BOSS_CRIT_CAP,
                               stats["crit"] * config.BOSS_CRIT_PER_POINT)
     if crit:

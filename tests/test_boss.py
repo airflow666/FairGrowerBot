@@ -96,3 +96,19 @@ def test_reward_split_by_damage(env, monkeypatch):
     c1 = db.get_or_create_player(1)["coins"]
     c2 = db.get_or_create_player(2)["coins"]
     assert c1 > c2
+
+
+def test_length_adds_boss_damage(env, monkeypatch):
+    boss, db, config = env["boss"], env["database"], env["config"]
+    import random
+    # Фикс rng, чтобы сравнивать чистый вклад длины
+    monkeypatch.setattr(config, "BOSS_TEMPLATES", [{"emoji": "👹", "name": "X", "hp": 100000}])
+    boss.summon("c")
+    db.get_or_create_player(1)
+    r_small = boss.hit(1, "c", rng=random.Random(0))
+    # игрок 2 с большой длиной бьёт сильнее при том же rng
+    boss.summon("c2")
+    db.get_or_create_player(2)
+    db.add_user_size(2, "c2", 1000)  # +10 урона за 1000 см (по 100)
+    r_big = boss.hit(2, "c2", rng=random.Random(0))
+    assert r_big["damage"] > r_small["damage"]
