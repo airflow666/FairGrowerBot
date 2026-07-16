@@ -78,6 +78,7 @@ CI: `.github/workflows/ci.yml` (ruff + pytest). Деплой: `deploy/upgrade.sh
 | `accept_duel_{duel_id}` | `_accept_duel` | проверки ДО claim; затем атомарный claim |
 | `casino_{bet}` | `_play_casino` | попап-результат + панель остаётся |
 | `setclass_{owner}_{code}` | `_set_class` | первый выбор класса (бесплатно) |
+| `train_{owner}_{stat}` | `_train_stat` | вложить свободное очко прокачки |
 | `start_exp_{zone}` | `_start_expedition` | + job возврата, если чат активный |
 | `claim_exp` | `_claim_expedition` | по user_id нажавшего |
 | `equip_{item_id}` | `_equip_item` | ownership проверяется в SQL |
@@ -110,7 +111,15 @@ env `DATABASE_PATH` (тесты подменяют + `importlib.reload(config, d
   crit (удвоение урона босса), speed (ускорение экспедиций). **5 слотов** 1:1:
   weapon→str, helmet→crit, armor→vit, boots→speed, artifact→luck.
 - Уровень: шаг `LEVEL_STEP*L`; статы: `BASE_STAT + POINTS_PER_LEVEL*(level-1)`
-  по весам класса (класс качает только str/vit/luck) + бонусы предметов.
+  по весам класса + `FREE_POINTS_PER_LEVEL` свободных очков (игрок вкладывает
+  сам, `train_{owner}_{stat}` в профиле; хранение — `players.bonus_stats` JSON,
+  `character.free_points/train_stat`) + бонусы предметов.
+- **Пассивки классов** (`CLASSES[..]["passive"]`, константы `PASSIVE_*`):
+  giga — первый удар по мобу +50%; tank — урон мобов/ловушек −15%; lucky —
+  +10% шанс лута; crit — крит лечит 3 HP; speed — побег без урона; avg — +10%
+  XP (применяется в `character.grant_exp`). Хуки боя — в `dungeon.fight/flee/
+  advance` (`_reduce_damage`, `item_chance_for`).
+- Убийство моба даёт XP = сила моба (сама масштабируется тиром/глубиной).
 - **Предмет — экземпляр** `{template, rarity, slot, stats}`; stats роллятся при
   выпадении (`loot.generate`) и хранятся в `player_items.stats` (JSON). Статы
   СЛУЧАЙНЫЕ: число (`ITEM_STAT_COUNT`) и бюджет (`ITEM_STAT_BUDGET`) зависят от

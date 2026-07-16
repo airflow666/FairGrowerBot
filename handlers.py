@@ -156,6 +156,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _play_casino(query, context, chat_key, int(data.rsplit("_", 1)[1]))
         elif data.startswith("setclass_"):
             await _set_class(query, context, chat_key, data[len("setclass_"):])
+        elif data.startswith("train_"):
+            await _train_stat(query, context, chat_key, data[len("train_"):])
         elif data.startswith("start_exp_"):
             await _start_expedition(query, context, chat_key, data[len("start_exp_"):])
         elif data == "claim_exp":
@@ -465,8 +467,9 @@ def _progress_bar(cur, total, width=10):
 
 def _class_keyboard(owner_id):
     rows = [
-        [InlineKeyboardButton(f"{cls['emoji']} {cls['name']} — {cls['perk']}",
-                              callback_data=f"setclass_{owner_id}_{code}")]
+        [InlineKeyboardButton(
+            f"{cls['emoji']} {cls['name']} — {cls['passive'][1]}",
+            callback_data=f"setclass_{owner_id}_{code}")]
         for code, cls in config.CLASSES.items()
     ]
     return InlineKeyboardMarkup(rows)
@@ -487,13 +490,26 @@ def cmd_profile(chat_key, user):
         f"👤 <b>{name}</b> — {classes.class_name(player['klass'])}\n"
         f"⭐ Ур. {level}  {_progress_bar(into, need)}  {into}/{need} XP\n"
         f"{stat_lines}\n"
-        f"🪙 {int(player['coins'])} монет · 📏 {size} см ({title_for(size)})\n"
-        f"<i>Персонаж общий для всех чатов, длина — местная</i>"
+        f"🪙 {int(player['coins'])} монет · 📏 {size} см ({title_for(size)})"
     )
+    passive = character.passive(player["klass"])
+    if passive:
+        text += f"\n{passive[0]} <b>{passive[1]}</b> — {passive[2]}"
+    text += "\n<i>Персонаж общий для всех чатов, длина — местная</i>"
+
     markup = None
     if not player["klass"]:
-        text += "\n\n<b>Выбери класс</b> (влияет на распределение характеристик):"
+        text += "\n\n<b>Выбери класс</b> (статы + пассивка):"
         markup = _class_keyboard(user.id)
+        return text, markup
+
+    points = character.free_points(player)
+    if points > 0:
+        text += f"\n\n🎯 <b>Очков прокачки: {points}</b> — вложи в стат:"
+        row = [InlineKeyboardButton(f"+{config.STATS[s][0]}",
+                                    callback_data=f"train_{user.id}_{s}")
+               for s in config.STATS]
+        markup = InlineKeyboardMarkup([row])
     return text, markup
 
 
@@ -512,6 +528,29 @@ async def _set_class(query, context, chat_key, payload):
         return
     if not character.set_class(owner_id, code):
         return
+    text, markup = cmd_profile(chat_key, query.from_user)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                  reply_markup=_with_back(markup, owner_id))
+
+
+async def _train_stat(query, context, chat_key, payload):
+    """Вложить свободное очко прокачки в стат (train_{owner}_{stat})."""
+    owner_str, _, stat = payload.partition("_")
+    try:
+        owner_id = int(owner_str)
+    except ValueError:
+        return
+    if query.from_user.id != owner_id:
+        await _answer(query, "Это не твой профиль!", alert=True)
+        return
+    result = character.train_stat(owner_id, stat)
+    if result["status"] == "no_points":
+        await _answer(query, "Очков прокачки нет — апай уровень.", alert=True)
+        return
+    if result["status"] != "ok":
+        return
+    emoji, sname = config.STATS[stat][0], config.STATS[stat][1]
+    await _answer(query, f"{emoji} {sname} +1 (осталось очков: {result['left']})")
     text, markup = cmd_profile(chat_key, query.from_user)
     await query.edit_message_text(text, parse_mode=ParseMode.HTML,
                                   reply_markup=_with_back(markup, owner_id))
@@ -964,7 +1003,7 @@ async def _dungeon_fight(query, context, owner_id):
         return
     # Победа: краткая сводка боя попапом
     mob = result["mob"]
-    parts = [f"⚔️ Разъебал {mob['name']}! +{result['bounty']} 🪙"]
+    parts = [f"⚔️ Разъебал {mob['name']}! +{result['bounty']} 🪙, +{result['exp']} XP"]
     if result["found_item"]:
         parts.append("+лут 🎁")
     if result["crits"]:
@@ -973,6 +1012,8 @@ async def _dungeon_fight(query, context, owner_id):
         parts.append(f"уклонов: {result['dodges']} ⚡")
     parts.append(f"получил -{result['taken']} HP" if result["taken"]
                  else "без единой царапины!")
+    if result["level_up"] > 0:
+        parts.append(f"🎉 АПНУЛ {result['level']} УРОВЕНЬ!")
     await _answer(query, ", ".join(parts), alert=True)
     await _dungeon_rerender(query, user.id, owner_id)
 
@@ -1227,7 +1268,10 @@ def cmd_info(chat_key, user):
     text = (
         "ℹ️ <b>Как всё устроено</b>\n\n"
         "<b>Персонаж</b> — общий во всех чатах. Опыт капает с grow, дуэлей, "
-        "экспедиций, боссов и подземелий; уровень даёт очки характеристик.\n\n"
+        "экспедиций, боссов и мобов в подземельях. Каждый уровень даёт "
+        f"+{config.POINTS_PER_LEVEL} очка статов по классу и "
+        f"+{config.FREE_POINTS_PER_LEVEL} свободных — вкладывай их сам в профиле. "
+        "У каждого класса своя <b>пассивка</b> (видно в профиле и при выборе).\n\n"
         f"<b>Характеристики:</b>\n{stats}\n\n"
         f"<b>Редкости</b> (реже → ценнее):\n{rarities}\n"
         "Статы предметов случайные: чем выше редкость — тем их больше и жирнее.\n\n"

@@ -107,3 +107,35 @@ def test_title_by_length(env):
     assert "Корнишон" in utils.title_for(50)
     assert "Микропенис" in utils.title_for(-5)
     assert "Орбитальный" in utils.title_for(3000)
+
+
+def test_free_points_and_training(env):
+    database, _, _, character = env
+    database.get_or_create_player(1)
+    database.update_player_progress(1, 1000, 5)  # уровень 5
+    player = database.get_or_create_player(1)
+    # (5-1) * 2 = 8 свободных очков
+    assert character.free_points(player) == 8
+    before = character.effective_stats(player)["strength"]
+    r = character.train_stat(1, "strength")
+    assert r["status"] == "ok" and r["left"] == 7
+    after = character.stats_for_user(1)["strength"]
+    assert after == before + 1
+
+
+def test_training_cannot_overspend(env):
+    database, _, _, character = env
+    database.get_or_create_player(1)  # уровень 1 -> 0 очков
+    assert character.train_stat(1, "luck")["status"] == "no_points"
+    assert character.train_stat(1, "nonsense")["status"] == "bad"
+
+
+def test_avg_class_xp_passive(env):
+    database, _, _, character = env
+    database.get_or_create_player(1)
+    character.set_class(1, "avg")
+    r = character.grant_exp(1, 100)
+    assert r["gained"] == 110  # +10% от «Душного Гринда»
+    database.get_or_create_player(2)
+    character.set_class(2, "giga")
+    assert character.grant_exp(2, 100)["gained"] == 100

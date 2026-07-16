@@ -166,3 +166,70 @@ def test_trap_can_kill(env, monkeypatch):
             break
     assert result["status"] == "dead"
     assert dungeon.leave(1) is None
+
+
+def test_mob_kill_grants_exp(env, monkeypatch):
+    dungeon, db, character, config = (env["dungeon"], env["database"],
+                                      env["character"], env["config"])
+    _strong_player(db, character, 1)
+    _give_coins(db, 1, 100)
+    exp_before = db.get_or_create_player(1)["exp"]
+    dungeon.enter(1, "rats")
+    _force_room(monkeypatch, config, "mob")
+    dungeon.advance(1, rng=random.Random(1))
+    r = dungeon.fight(1, rng=random.Random(2))
+    assert r["status"] == "win" and r["exp"] > 0
+    assert db.get_or_create_player(1)["exp"] > exp_before
+
+
+def test_speed_passive_flee_is_free(env, monkeypatch):
+    dungeon, db, character, config = (env["dungeon"], env["database"],
+                                      env["character"], env["config"])
+    db.get_or_create_player(1)
+    character.set_class(1, "speed")
+    db.update_player_progress(1, 10**7, 25)
+    _give_coins(db, 1, 5000)
+    dungeon.enter(1, "hell")
+    _force_room(monkeypatch, config, "mob")
+    dungeon.advance(1, rng=random.Random(1))
+    # Скорострел убегает без урона при ЛЮБОМ сиде
+    for seed in range(10):
+        r = dungeon.flee(1, rng=random.Random(seed))
+        assert r["damage"] == 0
+        _force_room(monkeypatch, config, "mob")
+        dungeon.advance(1, rng=random.Random(seed + 100))
+
+
+def test_tank_passive_reduces_trap(env, monkeypatch):
+    dungeon, db, character, config = (env["dungeon"], env["database"],
+                                      env["character"], env["config"])
+    # Два игрока с одинаковым уровнем; один танк, другой без класса
+    for uid in (1, 2):
+        db.get_or_create_player(uid)
+        _give_coins(db, uid, 100)
+    character.set_class(1, "tank")
+    dungeon.enter(1, "rats")
+    dungeon.enter(2, "rats")
+    _force_room(monkeypatch, config, "trap")
+    r_tank = dungeon.advance(1, rng=random.Random(3))
+    r_none = dungeon.advance(2, rng=random.Random(3))
+    assert r_tank["damage"] < r_none["damage"]
+
+
+def test_giga_first_strike(env, monkeypatch):
+    dungeon, db, character, config = (env["dungeon"], env["database"],
+                                      env["character"], env["config"])
+    # Одинаковые статы (ур. 1): гигачлен наносит больше за бой того же сида
+    for uid in (1, 2):
+        db.get_or_create_player(uid)
+        _give_coins(db, uid, 100)
+    character.set_class(1, "giga")
+    dungeon.enter(1, "rats")
+    dungeon.enter(2, "rats")
+    _force_room(monkeypatch, config, "mob")
+    dungeon.advance(1, rng=random.Random(5))
+    dungeon.advance(2, rng=random.Random(5))
+    r1 = dungeon.fight(1, rng=random.Random(6))
+    r2 = dungeon.fight(2, rng=random.Random(6))
+    if r1["status"] == "win" and r2["status"] == "win":
+        assert r1["dealt"] >= r2["dealt"]

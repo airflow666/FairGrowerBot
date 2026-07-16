@@ -102,6 +102,7 @@ def advance(user_id, rng=random):
     if room == "trap":
         damage = dungeon["trap_damage"] + dungeon["trap_per_depth"] * depth \
             + rng.randint(0, depth)
+        damage = _reduce_damage(user_id, damage)
         hp -= damage
         if hp <= 0:
             database.finish_dungeon_run(run["id"], "dead")
@@ -119,12 +120,30 @@ def advance(user_id, rng=random):
     # Сокровище: рандомные монеты, шанс предмета
     gain = rng.randint(*dungeon["coins_room"]) + dungeon["coins_per_depth"] * depth
     coins += gain
-    found_item = rng.random() < dungeon["item_chance"]
+    found_item = rng.random() < item_chance_for(user_id, dungeon["item_chance"])
     if found_item:
         treasures += 1
     database.update_dungeon_run(run["id"], depth, hp, coins, treasures)
     return {"status": "treasure", "depth": depth, "hp": hp, "gain": gain,
             "found_item": found_item}
+
+
+def _klass(user_id):
+    return database.get_or_create_player(user_id)["klass"]
+
+
+def _reduce_damage(user_id, damage) -> int:
+    """Пассивка Мясного Штурмовика: входящий урон -15%."""
+    if _klass(user_id) == "tank":
+        return max(1, round(damage * (1 - config.PASSIVE_DAMAGE_REDUCTION)))
+    return damage
+
+
+def item_chance_for(user_id, base_chance) -> float:
+    """Пассивка Лудомана: +10% к шансу лута."""
+    if _klass(user_id) == "lucky":
+        return base_chance + config.PASSIVE_LOOT_CHANCE_BONUS
+    return base_chance
 
 
 def fight(user_id, rng=random):
@@ -140,18 +159,28 @@ def fight(user_id, rng=random):
         return {"status": "no_mob"}
     dungeon = _run_dungeon(run)
 
-    stats = character.effective_stats(database.get_or_create_player(user_id))
+    player = database.get_or_create_player(user_id)
+    klass = player["klass"]
+    stats = character.effective_stats(player)
     crit_p = min(config.BOSS_CRIT_CAP, stats["crit"] * config.BOSS_CRIT_PER_POINT)
     dodge_p = min(config.DUNGEON_DODGE_CAP,
                   stats["speed"] * config.DUNGEON_DODGE_PER_POINT)
 
     hp, mob_hp = run["hp"], mob["hp"]
     dealt = taken = crits = dodges = 0
+    first_strike = True
     while mob_hp > 0 and hp > 0:
         dmg = stats["strength"] + rng.randint(0, max(1, stats["strength"] // 2))
+        if first_strike and klass == "giga":
+            # Пассивка «С Порога в Ебало»: первый удар усилен
+            dmg = round(dmg * (1 + config.PASSIVE_FIRST_STRIKE_BONUS))
+        first_strike = False
         if rng.random() < crit_p:
             dmg *= 2
             crits += 1
+            if klass == "crit":
+                # Пассивка «Жажда Крови»: крит подлечивает
+                hp = min(run["max_hp"], hp + config.PASSIVE_CRIT_LIFESTEAL)
         mob_hp -= dmg
         dealt += dmg
         if mob_hp <= 0:
@@ -160,6 +189,7 @@ def fight(user_id, rng=random):
             dodges += 1
             continue
         hit = mob["power"] + rng.randint(0, max(1, mob["power"] // 2))
+        hit = _reduce_damage(user_id, hit)
         hp -= hit
         taken += hit
 
@@ -170,14 +200,18 @@ def fight(user_id, rng=random):
 
     coins = run["coins_earned"] + mob["bounty"]
     treasures = run["treasures"]
-    found_item = rng.random() < dungeon["mob_item_chance"]
+    found_item = rng.random() < item_chance_for(user_id, dungeon["mob_item_chance"])
     if found_item:
         treasures += 1
     database.update_dungeon_run(run["id"], run["depth"], hp, coins, treasures)
     database.set_dungeon_room(run["id"], None)
+    # Опыт за победу над мобом: равен его силе (масштабируется тиром/глубиной)
+    exp_info = character.grant_exp(user_id, mob["power"])
     return {"status": "win", "mob": mob, "hp": hp, "taken": taken,
             "dealt": dealt, "crits": crits, "dodges": dodges,
-            "bounty": mob["bounty"], "found_item": found_item}
+            "bounty": mob["bounty"], "found_item": found_item,
+            "exp": exp_info["gained"], "level_up": exp_info["level_up"],
+            "level": exp_info["level"]}
 
 
 def flee(user_id, rng=random):
@@ -189,12 +223,15 @@ def flee(user_id, rng=random):
     if mob is None:
         return {"status": "no_mob"}
 
-    stats = character.effective_stats(database.get_or_create_player(user_id))
+    player = database.get_or_create_player(user_id)
+    stats = character.effective_stats(player)
     dodge_p = min(config.DUNGEON_DODGE_CAP,
                   stats["speed"] * config.DUNGEON_DODGE_PER_POINT)
     damage = 0
-    if rng.random() >= dodge_p:
+    # Пассивка «Скользкий Тип»: Скорострел всегда уходит чистым
+    if player["klass"] != "speed" and rng.random() >= dodge_p:
         damage = int(mob["power"] * config.DUNGEON_FLEE_DAMAGE * rng.random())
+        damage = _reduce_damage(user_id, damage) if damage else 0
     hp = max(1, run["hp"] - damage)  # побег не убивает
     database.update_dungeon_run(run["id"], run["depth"], hp,
                                 run["coins_earned"], run["treasures"])
