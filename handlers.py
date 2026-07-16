@@ -171,6 +171,10 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _dungeon_enter(query, context, chat_key, data[len("dng_enter_"):])
         elif data.startswith("dng_deep_"):
             await _dungeon_deeper(query, context, int(data.rsplit("_", 1)[1]))
+        elif data.startswith("dng_fight_"):
+            await _dungeon_fight(query, context, int(data.rsplit("_", 1)[1]))
+        elif data.startswith("dng_flee_"):
+            await _dungeon_flee(query, context, int(data.rsplit("_", 1)[1]))
         elif data.startswith("dng_leave_"):
             await _dungeon_leave(query, context, int(data.rsplit("_", 1)[1]))
         elif data.startswith("buy_chest_"):
@@ -823,18 +827,32 @@ def _dungeon_room_message(run, owner_id):
     d = dungeon.get_dungeon(run["dungeon"]) or {"emoji": "🏰", "name": "Подземелье"}
     hp = max(0, int(run["hp"]))
     bar = _progress_bar(hp, run["max_hp"])
-    risk = int(dungeon.trap_chance(dungeon.get_dungeon(run["dungeon"])
-               or next(iter(config.DUNGEONS.values())), run["depth"] + 1) * 100)
+    mob = dungeon.current_mob(run)
+
+    if mob:
+        # Комната с мобом: видно его HP и силу — дерись или съёбывай
+        text = (
+            f"{d['emoji']} <b>{d['name']} — глубина {run['depth']}</b>\n"
+            f"❤️ Ты: {bar}  {hp}/{run['max_hp']}\n\n"
+            f"{mob['emoji']} <b>{mob['name']}</b> преградил путь!\n"
+            f"🩸 HP: {mob['hp']}  💪 Сила: {mob['power']}  "
+            f"💰 Награда: ~{mob['bounty']} 🪙"
+        )
+        markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton("⚔️ Врубиться", callback_data=f"dng_fight_{owner_id}"),
+            InlineKeyboardButton("🏃 Съебаться", callback_data=f"dng_flee_{owner_id}"),
+        ]])
+        return text, markup
+
     text = (
-        f"{d['emoji']} <b>{d['name']} — глубина {run['depth']}</b>\n\n"
-        f"❤️ HP: {bar}  {hp}/{run['max_hp']}\n"
-        f"🪙 Накоплено: {run['coins_earned']}  🎁 Добыча: {run['treasures']}\n"
-        f"⚠️ Риск ловушки дальше: ~{risk}%\n\n"
-        f"Идти глубже или уйти с добычей?"
+        f"{d['emoji']} <b>{d['name']} — глубина {run['depth']}</b>\n"
+        f"❤️ {bar}  {hp}/{run['max_hp']}\n"
+        f"🪙 Набрано: {run['coins_earned']}  🎁 Лут: {run['treasures']}\n\n"
+        f"Глубже или сваливаем с хабаром?"
     )
     markup = InlineKeyboardMarkup([[
         InlineKeyboardButton("⬇️ Глубже", callback_data=f"dng_deep_{owner_id}"),
-        InlineKeyboardButton("🚪 Уйти с добычей", callback_data=f"dng_leave_{owner_id}"),
+        InlineKeyboardButton("🚪 Свалить с хабаром", callback_data=f"dng_leave_{owner_id}"),
     ]])
     return text, markup
 
@@ -846,10 +864,10 @@ def cmd_dungeon(chat_key, user):
         return _dungeon_room_message(run, user.id)
 
     text = (
-        "🏰 <b>Подземелья</b>\n\n"
-        "Спускайся вглубь за монетами и добычей, но риск ловушки растёт с "
-        "глубиной. Уйти с добычей можно в любой момент — или погибнуть и "
-        f"потерять всё.\n\n🪙 Баланс: {int(player['coins'])} монет\n\n"
+        "🏰 <b>Подземелья</b>\n"
+        "В комнатах — мобы (дерись или беги), тайники, ловушки и привалы. "
+        "Сдох — потерял всё.\n"
+        f"🪙 Баланс: {int(player['coins'])}\n\n"
     )
     rows = []
     for code, d, unlocked in dungeon.available_dungeons(player["level"]):
@@ -883,6 +901,23 @@ async def _dungeon_enter(query, context, chat_key, dungeon_code):
                                   reply_markup=_with_back(markup, user.id))
 
 
+async def _dungeon_death(query, owner_id, depth, damage, cause):
+    await _answer(query, "💀 Ты зафидил!", alert=True)
+    await query.edit_message_text(
+        f"💀 <b>Слился на глубине {depth}.</b>\n"
+        f"{cause} выбил(а) {damage} — вся добыча ушла крипам. 🪦",
+        parse_mode=ParseMode.HTML,
+        reply_markup=_with_back(None, owner_id),
+    )
+
+
+async def _dungeon_rerender(query, user_id, owner_id):
+    run = database.get_active_dungeon_run(user_id)
+    text, markup = _dungeon_room_message(run, owner_id)
+    await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                  reply_markup=_with_back(markup, owner_id))
+
+
 async def _dungeon_deeper(query, context, owner_id):
     user = query.from_user
     if user.id != owner_id:
@@ -894,24 +929,68 @@ async def _dungeon_deeper(query, context, owner_id):
         await _answer(query, "Забег уже завершён.", alert=True)
         return
     if status == "dead":
-        await _answer(query, "💀 Ты зафидил!", alert=True)
-        await query.edit_message_text(
-            f"💀 <b>Слился на глубине {result['depth']}.</b>\n"
-            f"Ловушка выбила {result['damage']} — вся добыча ушла крипам. 🪦",
-            parse_mode=ParseMode.HTML,
-            reply_markup=_with_back(None, owner_id),
-        )
+        await _dungeon_death(query, owner_id, result["depth"], result["damage"],
+                             "Ловушка")
         return
-    run = database.get_active_dungeon_run(user.id)
-    text, markup = _dungeon_room_message(run, owner_id)
-    if status == "trap":
+    if status == "mob":
+        mob = result["mob"]
+        await _answer(query, f"{mob['emoji']} {mob['name']} преградил путь!")
+    elif status == "mob_pending":
+        await _answer(query, "Сначала разберись с тем, кто перед тобой!", alert=True)
+    elif status == "trap":
         await _answer(query, f"🪤 Ловушка! -{result['damage']} HP")
+    elif status == "rest":
+        await _answer(query, f"🕯️ Привал. Отлежался: +{result['heal']} HP")
     elif result.get("found_item"):
         await _answer(query, f"🎁 Тайник! +{result['gain']} 🪙 и лут")
     else:
-        await _answer(query, f"🪙 Пусто, только +{result['gain']} монет")
-    await query.edit_message_text(text, parse_mode=ParseMode.HTML,
-                                  reply_markup=_with_back(markup, owner_id))
+        await _answer(query, f"🪙 Комната с мелочью: +{result['gain']} монет")
+    await _dungeon_rerender(query, user.id, owner_id)
+
+
+async def _dungeon_fight(query, context, owner_id):
+    user = query.from_user
+    if user.id != owner_id:
+        await _answer(query, "Это не твой забег!", alert=True)
+        return
+    result = dungeon.fight(user.id)
+    status = result["status"]
+    if status in ("no_run", "no_mob"):
+        await _answer(query, "Драться не с кем.", alert=True)
+        return
+    if status == "dead":
+        await _dungeon_death(query, owner_id, result["depth"], result["damage"],
+                             result["cause"])
+        return
+    # Победа: краткая сводка боя попапом
+    mob = result["mob"]
+    parts = [f"⚔️ Разъебал {mob['name']}! +{result['bounty']} 🪙"]
+    if result["found_item"]:
+        parts.append("+лут 🎁")
+    if result["crits"]:
+        parts.append(f"критов: {result['crits']} 💥")
+    if result["dodges"]:
+        parts.append(f"уклонов: {result['dodges']} ⚡")
+    parts.append(f"получил -{result['taken']} HP" if result["taken"]
+                 else "без единой царапины!")
+    await _answer(query, ", ".join(parts), alert=True)
+    await _dungeon_rerender(query, user.id, owner_id)
+
+
+async def _dungeon_flee(query, context, owner_id):
+    user = query.from_user
+    if user.id != owner_id:
+        await _answer(query, "Это не твой забег!", alert=True)
+        return
+    result = dungeon.flee(user.id)
+    if result["status"] in ("no_run", "no_mob"):
+        await _answer(query, "Бежать не от кого.", alert=True)
+        return
+    if result["damage"]:
+        await _answer(query, f"🏃 Съебался, но словил -{result['damage']} HP на прощание")
+    else:
+        await _answer(query, "🏃 Съебался как призрак — без царапин")
+    await _dungeon_rerender(query, user.id, owner_id)
 
 
 async def _dungeon_leave(query, context, owner_id):
@@ -921,7 +1000,8 @@ async def _dungeon_leave(query, context, owner_id):
         return
     summary = dungeon.leave(user.id)
     if summary is None:
-        await _answer(query, "Забег уже завершён.", alert=True)
+        await _answer(query, "Сначала разберись с мобом (или забег уже завершён).",
+                      alert=True)
         return
     items_text = "\n".join(_item_full(i) for i in summary["items"]) or "—"
     text = (
@@ -1150,15 +1230,17 @@ def cmd_info(chat_key, user):
         "экспедиций, боссов и подземелий; уровень даёт очки характеристик.\n\n"
         f"<b>Характеристики:</b>\n{stats}\n\n"
         f"<b>Редкости</b> (реже → ценнее):\n{rarities}\n"
-        "Эпик+ дают вторичные статы, мифик+ — несколько.\n\n"
-        "<b>Слоты:</b> "
-        + ", ".join(f"{e} {n}" for e, n, _ in config.SLOTS.values()) + "\n\n"
-        "<b>Дуэль:</b> шанс = 50% ± Сила (коридор "
+        "Статы предметов случайные: чем выше редкость — тем их больше и жирнее.\n\n"
+        "<b>Дуэль:</b> шанс = 50% ± Сила ± длина (коридор "
         f"{int(config.DUEL_CHANCE_MIN*100)}–{int(config.DUEL_CHANCE_MAX*100)}%).\n"
-        f"<b>Босс:</b> урон от Силы, Крит удваивает (до {int(config.BOSS_CRIT_CAP*100)}%).\n"
+        f"<b>Босс:</b> урон от Силы, Крита и длины (+1 за {config.BOSS_DAMAGE_PER_CM} см). "
+        "Дроп с босса ЖИРНЕЕ всего остального: чем больше твоя доля урона — тем "
+        "выше гарантированный минимум редкости.\n"
+        "<b>Подземелья:</b> комнаты с мобами (Сила/Крит бьют, Скорость уклоняет, "
+        "Живучесть = HP) — дерись или беги; тайники, ловушки, привалы. "
+        "Смерть = минус всё.\n"
         f"<b>Экспедиции:</b> Скорость ускоряет (до {int(config.EXPEDITION_SPEED_CAP*100)}%).\n"
-        f"<b>Подземелье:</b> Живучесть = запас HP.\n"
-        f"<b>Экономика:</b> монеты с добычи; обмен {config.CM_PER_COIN} см = 1 🪙; "
+        f"<b>Экономика:</b> обмен {config.CM_PER_COIN} см = 1 🪙; "
         "трать в магазине, на ферму, крафт и казино."
     )
     return text

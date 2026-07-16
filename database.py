@@ -229,6 +229,7 @@ def init_db():
         _ensure_column(conn, "players", "income_at", "TIMESTAMP")
         _ensure_column(conn, "player_items", "stats", "TEXT")
         _ensure_column(conn, "dungeon_runs", "dungeon", "TEXT")
+        _ensure_column(conn, "dungeon_runs", "room", "TEXT")
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_grow_history_chat "
@@ -1023,6 +1024,14 @@ def create_dungeon_run(user_id, dungeon, max_hp):
             (user_id, dungeon, max_hp, max_hp, utils.now().isoformat()),
         )
         return cur.lastrowid
+
+
+def set_dungeon_room(run_id, room_json):
+    """Сохранить текущую комнату забега (JSON моба) или очистить (None)."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE dungeon_runs SET room = ? WHERE id = ?", (room_json, run_id)
+        )
 
 
 def update_dungeon_run(run_id, depth, hp, coins_earned, treasures):

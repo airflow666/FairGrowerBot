@@ -112,3 +112,30 @@ def test_length_adds_boss_damage(env, monkeypatch):
     db.add_user_size(2, "c2", 1000)  # +10 урона за 1000 см (по 100)
     r_big = boss.hit(2, "c2", rng=random.Random(0))
     assert r_big["damage"] > r_small["damage"]
+
+
+def test_boss_loot_floor_by_share(env):
+    boss = env["boss"]
+    assert boss.loot_floor_for_share(0.5) == "legendary"
+    assert boss.loot_floor_for_share(0.25) == "epic"
+    assert boss.loot_floor_for_share(0.1) == "rare"
+    assert boss.loot_floor_for_share(0.01) == "uncommon"
+
+
+def test_boss_drop_respects_floor(env, monkeypatch):
+    boss, db, config = env["boss"], env["database"], env["config"]
+    import random
+    monkeypatch.setattr(config, "BOSS_TEMPLATES",
+                        [{"emoji": "👹", "name": "X", "hp": 400}])
+    b, _ = boss.summon("chatF")
+    # Игрок 1 ~75% урона, игрок 2 ~22% (добивка игрока 3 размоет чуть-чуть)
+    db.apply_boss_hit(b["id"], 1, 300)
+    db.apply_boss_hit(b["id"], 2, 90)
+    result = boss.hit(3, "chatF", rng=random.Random(0))
+    assert result["status"] == "killed"
+    order = config.RARITY_ORDER
+    by_uid = {r["user_id"]: r for r in result["rewards"]}
+    # 75% доля -> минимум legendary (или выше за счёт тир-апа топа)
+    assert order.index(by_uid[1]["item"]["rarity"]) >= order.index("legendary")
+    # 20%+ доля -> минимум epic
+    assert order.index(by_uid[2]["item"]["rarity"]) >= order.index("epic")

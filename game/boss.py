@@ -65,8 +65,28 @@ def hit(user_id, chat_key, rng=random):
             "hp": new_hp, "max_hp": boss["max_hp"]}
 
 
+def loot_floor_for_share(share) -> str:
+    """Гарантированный минимум редкости дропа по доле нанесённого урона."""
+    for threshold, rarity in config.BOSS_LOOT_FLOORS:
+        if share >= threshold:
+            return rarity
+    return config.BOSS_LOOT_FLOORS[-1][1]
+
+
+def _bump_rarity(rarity) -> str:
+    """Поднять редкость на один тир (с потолком)."""
+    order = config.RARITY_ORDER
+    idx = order.index(rarity)
+    return order[min(idx + 1, len(order) - 1)]
+
+
 def _distribute_rewards(boss, rng):
-    """Раздать монеты, опыт и лут участникам боя по вкладу урона."""
+    """Раздать монеты, опыт и лут по вкладу урона.
+
+    Дроп босса — отдельная таблица: пол редкости зависит от доли урона
+    (больше вложился — гарантированно лучше лут), топ-дамагер с шансом
+    получает пол ещё на тир выше.
+    """
     contributors = database.get_boss_contributors(boss["id"])
     total = sum(c["damage"] for c in contributors) or 1
     results = []
@@ -77,9 +97,12 @@ def _distribute_rewards(boss, rng):
         database.adjust_player_coins(uid, coins)
         character.grant_exp(uid, config.BOSS_EXP_REWARD)
 
+        share = c["damage"] / total
+        floor = loot_floor_for_share(share)
+        if i == 0 and rng.random() < config.BOSS_TOP_TIER_UP_CHANCE:
+            floor = _bump_rarity(floor)
         luck = character.effective_stats(player)["luck"]
-        bonus = config.BOSS_TOP_LUCK_BONUS if i == 0 else 0.0
-        item = loot.generate(luck=luck, zone_bonus=bonus, rng=rng)
+        item = loot.generate_floored(floor, luck=luck, rng=rng)
         database.add_item(uid, item)
 
         results.append({
