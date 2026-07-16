@@ -227,6 +227,7 @@ def init_db():
         _ensure_column(conn, "active_duels", "inline_message_id", "TEXT")
         _ensure_column(conn, "players", "property_level", "INTEGER DEFAULT 0")
         _ensure_column(conn, "players", "income_at", "TIMESTAMP")
+        _ensure_column(conn, "players", "bonus_stats", "TEXT")
         _ensure_column(conn, "player_items", "stats", "TEXT")
         _ensure_column(conn, "dungeon_runs", "dungeon", "TEXT")
         _ensure_column(conn, "dungeon_runs", "room", "TEXT")
@@ -707,6 +708,15 @@ def set_player_class(user_id, klass):
     with _connect() as conn:
         conn.execute(
             "UPDATE players SET klass = ? WHERE user_id = ?", (klass, user_id)
+        )
+
+
+def set_player_bonus_stats(user_id, bonus_json):
+    """Сохранить вложенные игроком свободные очки (JSON {stat: points})."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE players SET bonus_stats = ? WHERE user_id = ?",
+            (bonus_json, user_id),
         )
 
 
