@@ -82,7 +82,7 @@ CI: `.github/workflows/ci.yml` (ruff + pytest). Деплой: `deploy/upgrade.sh
 | `claim_exp` | `_claim_expedition` | по user_id нажавшего |
 | `equip_{item_id}` | `_equip_item` | ownership проверяется в SQL |
 | `boss_hit` / `boss_hit_{owner}` | `_boss_hit` | удар по user_id нажавшего; вариант с owner — карточка в чьём-то меню (сохраняет «⬅️ Меню» при перерисовке), без owner — общая карточка чата (авто-спавн) |
-| `dng_enter_{code}` / `dng_deep_{owner}` / `dng_leave_{owner}` | `_dungeon_*` | выбор подземелья + push-your-luck |
+| `dng_enter_{code}` / `dng_deep_{owner}` / `dng_fight_{owner}` / `dng_flee_{owner}` / `dng_leave_{owner}` | `_dungeon_*` | выбор, спуск, бой/побег от моба, выход |
 | `buy_chest_{code}` / `shop_reclass` / `reclass_{owner}_{code}` | `_buy_chest`/`_shop_reclass`/`_reclass` | магазин |
 | `convert_{cm}` | `_convert_cm` | обмен см→монеты |
 | `sell_{item_id}` / `sellall_{rarity}` | `_sell_item`/`_sell_all` | продажа (ownership в SQL) |
@@ -99,7 +99,7 @@ CI: `.github/workflows/ci.yml` (ruff + pytest). Деплой: `deploy/upgrade.sh
 - `player_items` (id, user_id, template, rarity, slot, stats JSON, equipped)
 - `expeditions` (user_id, zone, chat_key, ends_at, status: active/claimed)
 - `bosses` (chat_key, hp, status: active/defeated) + `boss_hits` (boss_id, user_id, damage, last_hit_at)
-- `dungeon_runs` (user_id, dungeon, depth, hp, coins_earned, treasures, status: active/left/dead)
+- `dungeon_runs` (user_id, dungeon, depth, hp, coins_earned, treasures, room JSON-моб, status: active/left/dead)
 - `achievements` (user_id, chat_id, code)
 
 Миграции: только ADD COLUMN/CREATE TABLE IF NOT EXISTS в `init_db()`. Путь к БД —
@@ -123,10 +123,18 @@ env `DATABASE_PATH` (тесты подменяют + `importlib.reload(config, d
 - Лут: веса редкостей × factor^i, **factor = 1 + LUCK_RARITY_FACTOR·√luck +
   zone_bonus, кап RARITY_FACTOR_CAP** (затухание — иначе Удача раздувает верх).
   Веса верхних тиров намеренно низкие (эпик+ ≈3-6%), чтобы редкое было редким.
-- Подземелья (`config.DUNGEONS`): гейтинг по уровню; риск ловушки растёт с
-  глубиной (`trap_chance + trap_growth*depth`, кап `trap_cap`) — фармить бесконечно
-  нельзя; предмет НЕ с каждой комнаты (`item_chance`); `loot_bonus` фиксированный
-  и небольшой (НЕ растёт с глубиной — иначе упирается в кап редкости).
+- Подземелья (`config.DUNGEONS`, 5 шт., гейтинг по уровню): каждый шаг — комната
+  по весам `DUNGEON_ROOM_WEIGHTS` (моб 40% / сокровище 30% / ловушка 20% /
+  привал 10%). Моб хранится в `dungeon_runs.room` (JSON) — пока он там, deeper и
+  leave заблокированы (только fight/flee). Бой в один клик (`dungeon.fight`):
+  Сила+Крит бьют, Скорость = уклон (`DUNGEON_DODGE_*`), Живучесть = HP; побег
+  (`flee`) не убивает (min 1 HP). Награды рандомные (диапазоны + прирост за
+  глубину), EV растёт по тирам ТОЛЬКО при соответствующем гире (симуляция:
+  слабак в высоком тире уходит в минус). `loot_floor` — минимум редкости лута.
+- Дроп босса — ОТДЕЛЬНАЯ таблица (`loot.generate_floored`): пол редкости по доле
+  урона (`BOSS_LOOT_FLOORS`: ≥40%→легендарка, ≥20%→эпик, ≥8%→редкое),
+  топ-дамагеру шанс `BOSS_TOP_TIER_UP_CHANCE` на +1 тир. Босс всегда жирнее
+  сундуков/подземелий.
 - Дуэль: шанс = 0.5 + 0.02*(power_a - power_b), кламп 0.35..0.65; power = strength+level.
 - Босс: урон = BOSS_BASE_DAMAGE + strength + rand(0..strength), крит (шанс
   `crit*BOSS_CRIT_PER_POINT`, кап) удваивает; награды по вкладу урона.

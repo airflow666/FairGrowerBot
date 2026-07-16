@@ -133,3 +133,12 @@ def test_equip_replaces_same_slot(env):
     db.equip_item(1, id1)
     db.equip_item(1, id2)  # надеваем второе — первое снимается
     assert [i["id"] for i in db.get_equipped(1)] == [id2]
+
+
+def test_roll_rarity_floored(env):
+    loot, config = env["loot"], env["config"]
+    order = config.RARITY_ORDER
+    # 200 роллов с полом epic — ни одного ниже
+    for seed in range(200):
+        r = loot.roll_rarity_floored("epic", rng=random.Random(seed))
+        assert order.index(r) >= order.index("epic")

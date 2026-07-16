@@ -251,40 +251,105 @@ BOSS_TEMPLATES = [
 BOSS_HIT_COOLDOWN = 3600      # секунд между ударами одного игрока
 BOSS_BASE_DAMAGE = 5          # к урону прибавляется Сила игрока
 BOSS_DAMAGE_PER_CM = 100      # +1 урона по боссу за каждые N см длины (чатовой)
-BOSS_EXP_REWARD = 50          # опыт каждому участнику при победе
-BOSS_COIN_POOL = 200          # монеты, делятся между бойцами по вкладу урона
-BOSS_TOP_LUCK_BONUS = 0.5     # бонус к редкости лута для нанёсшего больше всех урона
+BOSS_EXP_REWARD = 80          # опыт каждому участнику при победе
+BOSS_COIN_POOL = 400          # монеты, делятся между бойцами по вкладу урона
 
-# --- RPG: подземелья (push-your-luck) ----------------------------------------
+# Дроп с босса — ОТДЕЛЬНАЯ таблица: гарантированный «пол» редкости по доле
+# урона (проверяется сверху вниз), дальше ролл от пола и выше. Босс всегда
+# даёт лучше подземелий и сундуков.
+BOSS_LOOT_FLOORS = [
+    (0.40, "legendary"),
+    (0.20, "epic"),
+    (0.08, "rare"),
+    (0.0, "uncommon"),
+]
+BOSS_TOP_TIER_UP_CHANCE = 0.35  # шанс топ-дамагеру поднять пол ещё на +1 тир
+
+# --- RPG: подземелья (комнаты: мобы/сокровища/ловушки/привалы) ----------------
 
 DUNGEON_BASE_HP = 50              # базовое HP + Живучесть * множитель
 DUNGEON_HP_PER_VITALITY = 5
 DUNGEON_EXP_PER_DEPTH = 8         # опыт за пройденную глубину (при выходе живым)
 
-# Подземелья: code -> параметры. Гейтинг по уровню, риск растёт с глубиной.
-# item_chance — вероятность, что сундук СОДЕРЖИТ предмет (не каждый!).
-# loot_bonus — фиксированный (небольшой) сдвиг редкости, НЕ растёт с глубиной.
+# Типы комнат и их вероятности (сумма = 1). Мобы — главный источник наград.
+DUNGEON_ROOM_WEIGHTS = [
+    ("mob", 0.40),
+    ("treasure", 0.30),
+    ("trap", 0.20),
+    ("rest", 0.10),
+]
+
+# Бой с мобом (в один клик): Сила = урон, Крит удваивает (кап как у босса),
+# Скорость = шанс уклониться от каждого удара моба, Живучесть = запас HP.
+DUNGEON_DODGE_PER_POINT = 0.01
+DUNGEON_DODGE_CAP = 0.5
+# Побег: получаешь до FLEE_DAMAGE от силы моба (уклон работает), но не умираешь.
+DUNGEON_FLEE_DAMAGE = 0.5
+
+# Подземелья: code -> параметры. Гейтинг по уровню. Награды РАНДОМНЫЕ
+# (диапазоны) и растут с тиром и глубиной. loot_floor — минимальная редкость
+# лута отсюда; loot_bonus — сдвиг ролла вверх (фиксированный).
+# mob_*: hp/power — диапазон + прирост за глубину; bounty — монеты за победу.
 DUNGEONS = {
     "rats": {
         "emoji": "🕸️", "name": "Подвал Микропениса", "min_level": 1,
-        "entry_cost": 20, "coins_per_depth": 6,
-        "trap_chance": 0.35, "trap_growth": 0.03, "trap_cap": 0.85,
-        "damage_base": 6, "damage_per_depth": 4,
-        "item_chance": 0.22, "loot_bonus": 0.0,
+        "entry_cost": 20,
+        "mobs": [("🐀", "Крыса-Качок"), ("🪳", "Таракан-Гопник"),
+                 ("🧦", "Носок Судьбы")],
+        "mob_hp": (15, 25), "mob_hp_per_depth": 3,
+        "mob_power": (4, 7), "mob_power_per_depth": 1,
+        "mob_bounty": (15, 30), "mob_bounty_per_depth": 4, "mob_item_chance": 0.35,
+        "coins_room": (8, 20), "coins_per_depth": 4, "item_chance": 0.20,
+        "trap_damage": 5, "trap_per_depth": 3, "rest_heal": (5, 15),
+        "loot_floor": "common", "loot_bonus": 0.0,
     },
     "fort": {
-        "emoji": "🏰", "name": "Ипотечное Гетто", "min_level": 6,
-        "entry_cost": 90, "coins_per_depth": 12,
-        "trap_chance": 0.40, "trap_growth": 0.04, "trap_cap": 0.85,
-        "damage_base": 14, "damage_per_depth": 8,
-        "item_chance": 0.28, "loot_bonus": 0.15,
+        "emoji": "🏰", "name": "Ипотечное Гетто", "min_level": 5,
+        "entry_cost": 90,
+        "mobs": [("🧟", "Зомби-Должник"), ("👮", "Коллектор"),
+                 ("🤡", "Клоун-Риелтор")],
+        "mob_hp": (35, 55), "mob_hp_per_depth": 5,
+        "mob_power": (8, 14), "mob_power_per_depth": 2,
+        "mob_bounty": (45, 90), "mob_bounty_per_depth": 8, "mob_item_chance": 0.40,
+        "coins_room": (25, 60), "coins_per_depth": 8, "item_chance": 0.25,
+        "trap_damage": 10, "trap_per_depth": 5, "rest_heal": (10, 25),
+        "loot_floor": "uncommon", "loot_bonus": 0.10,
+    },
+    "canals": {
+        "emoji": "🚽", "name": "Канализация Разбитых Надежд", "min_level": 10,
+        "entry_cost": 250,
+        "mobs": [("🐊", "Крокодил из Унитаза"), ("🦠", "Хламидия-Переросток"),
+                 ("🧌", "Тролль Канализации")],
+        "mob_hp": (60, 90), "mob_hp_per_depth": 7,
+        "mob_power": (14, 22), "mob_power_per_depth": 3,
+        "mob_bounty": (110, 220), "mob_bounty_per_depth": 15, "mob_item_chance": 0.45,
+        "coins_room": (60, 140), "coins_per_depth": 15, "item_chance": 0.28,
+        "trap_damage": 18, "trap_per_depth": 8, "rest_heal": (15, 35),
+        "loot_floor": "uncommon", "loot_bonus": 0.20,
     },
     "dragon": {
-        "emoji": "🌋", "name": "Жерло Хуеглота", "min_level": 14,
-        "entry_cost": 300, "coins_per_depth": 22,
-        "trap_chance": 0.45, "trap_growth": 0.05, "trap_cap": 0.90,
-        "damage_base": 30, "damage_per_depth": 14,
-        "item_chance": 0.32, "loot_bonus": 0.30,
+        "emoji": "🌋", "name": "Жерло Хуеглота", "min_level": 16,
+        "entry_cost": 600,
+        "mobs": [("🦎", "Ящер-Дрочер"), ("🔥", "Огненный Хуезавр"),
+                 ("🐲", "Драконыш-Пироман")],
+        "mob_hp": (90, 140), "mob_hp_per_depth": 9,
+        "mob_power": (22, 34), "mob_power_per_depth": 4,
+        "mob_bounty": (250, 500), "mob_bounty_per_depth": 30, "mob_item_chance": 0.50,
+        "coins_room": (130, 300), "coins_per_depth": 30, "item_chance": 0.30,
+        "trap_damage": 30, "trap_per_depth": 12, "rest_heal": (25, 50),
+        "loot_floor": "rare", "loot_bonus": 0.30,
+    },
+    "hell": {
+        "emoji": "😈", "name": "Ад Алиментщика", "min_level": 22,
+        "entry_cost": 1500,
+        "mobs": [("👿", "Бес-Алиментщик"), ("💼", "Демон Просроченных Зарплат"),
+                 ("☠️", "Аудитор Ада")],
+        "mob_hp": (140, 220), "mob_hp_per_depth": 12,
+        "mob_power": (34, 50), "mob_power_per_depth": 6,
+        "mob_bounty": (550, 1100), "mob_bounty_per_depth": 60, "mob_item_chance": 0.55,
+        "coins_room": (300, 700), "coins_per_depth": 60, "item_chance": 0.32,
+        "trap_damage": 50, "trap_per_depth": 18, "rest_heal": (40, 80),
+        "loot_floor": "rare", "loot_bonus": 0.45,
     },
 }
 
@@ -305,6 +370,12 @@ PROPERTIES = [
     {"emoji": "🌱", "name": "Грядка", "upgrade_cost": 100, "rate_per_hour": 5},
     {"emoji": "🪴", "name": "Теплица", "upgrade_cost": 300, "rate_per_hour": 15},
     {"emoji": "🏡", "name": "Плантация", "upgrade_cost": 800, "rate_per_hour": 40},
+    {"emoji": "🚜", "name": "Агрохолдинг «Елдак-Агро»", "upgrade_cost": 2000,
+     "rate_per_hour": 90},
+    {"emoji": "🏭", "name": "Завод Смазки", "upgrade_cost": 5000,
+     "rate_per_hour": 200},
+    {"emoji": "🛢️", "name": "Нефтевышка «Эль Дилдорадо»", "upgrade_cost": 12000,
+     "rate_per_hour": 450},
 ]
 
 # Накопление дохода капается на столько часов (стимул заходить и собирать)

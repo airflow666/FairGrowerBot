@@ -29,6 +29,34 @@ def roll_rarity(luck=0, zone_bonus=0.0, rng=random) -> str:
     return config.RARITY_ORDER[0]
 
 
+def roll_rarity_floored(floor, luck=0, zone_bonus=0.0, rng=random) -> str:
+    """Ролл редкости не ниже ``floor``: веса тиров ниже пола отбрасываются.
+
+    Используется для дропа с боссов и лут-фло подземелий: гарантирует минимум
+    и оставляет шанс на тиры выше (Удача и бонус двигают вверх).
+    """
+    order = config.RARITY_ORDER
+    start = order.index(floor) if floor in order else 0
+    factor = 1 + config.LUCK_RARITY_FACTOR * math.sqrt(max(0, luck)) + zone_bonus
+    factor = min(factor, config.RARITY_FACTOR_CAP)
+    codes = order[start:]
+    weights = [config.RARITIES[c][2] * (factor ** i) for i, c in enumerate(codes)]
+    total = sum(weights)
+    threshold = rng.random() * total
+    acc = 0.0
+    for code, w in zip(codes, weights, strict=True):
+        acc += w
+        if threshold <= acc:
+            return code
+    return codes[0]
+
+
+def generate_floored(floor, luck=0, zone_bonus=0.0, rng=random) -> dict:
+    """Сгенерировать экземпляр с гарантированным минимумом редкости."""
+    rarity = roll_rarity_floored(floor, luck, zone_bonus, rng)
+    return _instance(_pick_template(rarity, rng), rng)
+
+
 def _templates_for_rarity(rarity):
     return [code for code, t in config.ITEM_TEMPLATES.items()
             if t["rarity"] == rarity]
