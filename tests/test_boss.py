@@ -89,8 +89,8 @@ def test_reward_split_by_damage(env, monkeypatch):
     b, _ = boss.summon("chatA")
     bid = b["id"]
     # Вручную зададим неравный вклад, затем добьём
-    db.apply_boss_hit(bid, 1, 30)
-    db.apply_boss_hit(bid, 2, 9)
+    db.apply_boss_hit(bid, 1, 30, config.BOSS_HIT_COOLDOWN)
+    db.apply_boss_hit(bid, 2, 9, config.BOSS_HIT_COOLDOWN)
     boss.hit(3, "chatA", rng=random.Random(0))  # добивает
     # Игрок 1 (больше урона) получил больше монет, чем игрок 2
     c1 = db.get_or_create_player(1)["coins"]
@@ -129,8 +129,8 @@ def test_boss_drop_respects_floor(env, monkeypatch):
                         [{"emoji": "👹", "name": "X", "hp": 400}])
     b, _ = boss.summon("chatF")
     # Игрок 1 ~75% урона, игрок 2 ~22% (добивка игрока 3 размоет чуть-чуть)
-    db.apply_boss_hit(b["id"], 1, 300)
-    db.apply_boss_hit(b["id"], 2, 90)
+    db.apply_boss_hit(b["id"], 1, 300, config.BOSS_HIT_COOLDOWN)
+    db.apply_boss_hit(b["id"], 2, 90, config.BOSS_HIT_COOLDOWN)
     result = boss.hit(3, "chatF", rng=random.Random(0))
     assert result["status"] == "killed"
     order = config.RARITY_ORDER

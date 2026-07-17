@@ -58,7 +58,10 @@ def upgrade_property(user_id):
         return {"status": "no_coins", "need": target["upgrade_cost"],
                 "have": int(player["coins"])}
     claim_income(user_id)  # не теряем накопленное при улучшении
-    database.adjust_player_coins(user_id, -target["upgrade_cost"])
+    if not database.spend_coins(user_id, target["upgrade_cost"]):
+        player = database.get_or_create_player(user_id)
+        return {"status": "no_coins", "need": target["upgrade_cost"],
+                "have": int(player["coins"])}
     database.set_property_level(user_id, level + 1, utils.now().isoformat())
     return {"status": "upgraded", "level": level + 1, "property": target}
 
@@ -71,10 +74,10 @@ def buy_chest(user_id, chest_code, rng=random):
     if chest is None:
         return {"status": "bad"}
     player = database.get_or_create_player(user_id)
-    if player["coins"] < chest["price"]:
+    if not database.spend_coins(user_id, chest["price"]):
+        player = database.get_or_create_player(user_id)
         return {"status": "no_coins", "need": chest["price"],
                 "have": int(player["coins"])}
-    database.adjust_player_coins(user_id, -chest["price"])
     luck = character.effective_stats(player)["luck"]
     floor = chest.get("floor")
     if floor:
@@ -91,10 +94,10 @@ def change_class(user_id, klass):
     if klass not in config.CLASSES:
         return {"status": "bad"}
     player = database.get_or_create_player(user_id)
-    if player["coins"] < config.CLASS_CHANGE_COST:
+    if not database.spend_coins(user_id, config.CLASS_CHANGE_COST):
+        player = database.get_or_create_player(user_id)
         return {"status": "no_coins", "need": config.CLASS_CHANGE_COST,
                 "have": int(player["coins"])}
-    database.adjust_player_coins(user_id, -config.CLASS_CHANGE_COST)
     database.set_player_class(user_id, klass)
     return {"status": "ok"}
 
@@ -130,18 +133,26 @@ def convert_cm(user_id, chat_key, cm):
     coins = cm // config.CM_PER_COIN
     if coins <= 0:
         return {"status": "too_small"}
-    database.add_user_size(user_id, chat_key, -cm)
+    # Списываем только реально обменянные см — остаток (cm % CM_PER_COIN) не сгорает
+    spent = coins * config.CM_PER_COIN
+    database.add_user_size(user_id, chat_key, -spent)
     database.get_or_create_player(user_id)
     database.adjust_player_coins(user_id, coins)
-    return {"status": "ok", "cm": cm, "coins": coins}
+    return {"status": "ok", "cm": spent, "coins": coins}
 
 
 # --- Казино на монеты -------------------------------------------------------
 
 def play_casino(user_id, bet, win):
-    """Применить результат казино в монетах. Возвращает новый баланс."""
-    delta = bet * (config.CASINO_WIN_MULTIPLIER - 1) if win else -bet
-    return database.adjust_player_coins(user_id, delta)
+    """Применить результат казино в монетах. Возвращает новый баланс.
+
+    Проигрыш списывается атомарно (``spend_coins``) — двойной клик не уводит
+    баланс в минус. Выигрыш просто начисляется.
+    """
+    if win:
+        return database.adjust_player_coins(user_id, bet * (config.CASINO_WIN_MULTIPLIER - 1))
+    database.spend_coins(user_id, bet)
+    return int(database.get_or_create_player(user_id)["coins"])
 
 
 # --- Крафт ------------------------------------------------------------------

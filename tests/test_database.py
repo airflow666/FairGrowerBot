@@ -54,6 +54,37 @@ def test_max_size_tracks_peak(db, monkeypatch):
     assert int(row["max_size"]) == 30
 
 
+def test_spend_coins_atomic_guard(db):
+    db.get_or_create_player(1)
+    db.adjust_player_coins(1, 100)
+    # Хватает — списывается, баланс уменьшается
+    assert db.spend_coins(1, 60) is True
+    assert db.get_or_create_player(1)["coins"] == 40
+    # Не хватает — отказ, баланс НЕ уходит в минус
+    assert db.spend_coins(1, 50) is False
+    assert db.get_or_create_player(1)["coins"] == 40
+    # Ровно по балансу — можно
+    assert db.spend_coins(1, 40) is True
+    assert db.get_or_create_player(1)["coins"] == 0
+    # Ноль/отрицательное — no-op успех
+    assert db.spend_coins(1, 0) is True
+
+
+def test_apply_boss_hit_cooldown_and_dead(db):
+    bid = db.spawn_boss("c", "X", "👹", 1000)
+    # Первый удар проходит
+    r1 = db.apply_boss_hit(bid, 1, 50, 3600)
+    assert r1["result"] == "hit" and r1["hp"] == 950
+    # Второй сразу — на кулдауне, урон НЕ задваивается
+    r2 = db.apply_boss_hit(bid, 1, 50, 3600)
+    assert r2["result"] == "cooldown"
+    assert db.get_active_boss("c")["hp"] == 950
+    # По мёртвому боссу — no_boss
+    db.defeat_boss(bid)
+    r3 = db.apply_boss_hit(bid, 2, 50, 3600)
+    assert r3["result"] == "no_boss"
+
+
 def test_chats_are_isolated(db):
     db.apply_grow(1, "chatA", 5)
     db.apply_grow(1, "chatB", 9)

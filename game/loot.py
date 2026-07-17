@@ -11,10 +11,21 @@ import random
 import config
 
 
+def _rarity_factor(luck, zone_bonus) -> float:
+    """Множитель редкости: 1 + вклад Удачи (со своим капом) + бонус зоны.
+
+    Вклад Удачи капается ОТДЕЛЬНО (``LUCK_BOOST_CAP``), поэтому на дорогих
+    сундуках с высоким ``zone_bonus`` Удача продолжает двигать ролл вверх,
+    а не упирается в общий потолок. Итог ограничен ``RARITY_FACTOR_CAP``.
+    """
+    luck_boost = min(config.LUCK_BOOST_CAP,
+                     config.LUCK_RARITY_FACTOR * math.sqrt(max(0, luck)))
+    return min(1 + luck_boost + zone_bonus, config.RARITY_FACTOR_CAP)
+
+
 def roll_rarity(luck=0, zone_bonus=0.0, rng=random) -> str:
     """Выбрать редкость. Вклад Удачи затухает (sqrt) и ограничен капом."""
-    factor = 1 + config.LUCK_RARITY_FACTOR * math.sqrt(max(0, luck)) + zone_bonus
-    factor = min(factor, config.RARITY_FACTOR_CAP)
+    factor = _rarity_factor(luck, zone_bonus)
     weights = [
         config.RARITIES[code][2] * (factor ** i)
         for i, code in enumerate(config.RARITY_ORDER)
@@ -37,8 +48,7 @@ def roll_rarity_floored(floor, luck=0, zone_bonus=0.0, rng=random) -> str:
     """
     order = config.RARITY_ORDER
     start = order.index(floor) if floor in order else 0
-    factor = 1 + config.LUCK_RARITY_FACTOR * math.sqrt(max(0, luck)) + zone_bonus
-    factor = min(factor, config.RARITY_FACTOR_CAP)
+    factor = _rarity_factor(luck, zone_bonus)
     codes = order[start:]
     weights = [config.RARITIES[c][2] * (factor ** i) for i, c in enumerate(codes)]
     total = sum(weights)

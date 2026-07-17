@@ -82,7 +82,12 @@ def claim(user_id, rng=random):
     database.adjust_player_coins(user_id, coins)
     exp_info = character.grant_exp(user_id, zone["exp"])
 
-    item = loot.generate(luck=luck, zone_bonus=zone["luck_bonus"], rng=rng)
+    floor = zone.get("loot_floor")
+    if floor:
+        item = loot.generate_floored(floor, luck=luck,
+                                     zone_bonus=zone["luck_bonus"], rng=rng)
+    else:
+        item = loot.generate(luck=luck, zone_bonus=zone["luck_bonus"], rng=rng)
     database.add_item(user_id, item)
 
     return {

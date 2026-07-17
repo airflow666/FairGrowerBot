@@ -53,7 +53,10 @@ def enter(user_id, dungeon_code):
     if player["coins"] < dungeon["entry_cost"]:
         return {"status": "no_coins", "need": dungeon["entry_cost"],
                 "have": int(player["coins"])}
-    database.adjust_player_coins(user_id, -dungeon["entry_cost"])
+    if not database.spend_coins(user_id, dungeon["entry_cost"]):
+        player = database.get_or_create_player(user_id)
+        return {"status": "no_coins", "need": dungeon["entry_cost"],
+                "have": int(player["coins"])}
     vitality = character.effective_stats(player)["vitality"]
     max_hp = config.DUNGEON_BASE_HP + vitality * config.DUNGEON_HP_PER_VITALITY
     database.create_dungeon_run(user_id, dungeon_code, max_hp)
