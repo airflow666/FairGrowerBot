@@ -76,7 +76,12 @@ def buy_chest(user_id, chest_code, rng=random):
                 "have": int(player["coins"])}
     database.adjust_player_coins(user_id, -chest["price"])
     luck = character.effective_stats(player)["luck"]
-    item = loot.generate(luck=luck, zone_bonus=chest["bonus"], rng=rng)
+    floor = chest.get("floor")
+    if floor:
+        item = loot.generate_floored(floor, luck=luck,
+                                     zone_bonus=chest["bonus"], rng=rng)
+    else:
+        item = loot.generate(luck=luck, zone_bonus=chest["bonus"], rng=rng)
     database.add_item(user_id, item)
     return {"status": "ok", "item": item}
 

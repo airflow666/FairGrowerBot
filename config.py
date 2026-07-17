@@ -133,13 +133,15 @@ STATS = {
 # Веса верхних тиров срезаны, чтобы эпик+ не фармился (реликт — редчайший).
 # Порядок важен (от обычного к реликтовому) — используется в лут-роллах.
 RARITIES = {
-    "common":    ("⚪", "Сперма",           50.0, 2),
-    "uncommon":  ("🟢", "Прям Хуйня",       28.0, 4),
-    "rare":      ("🔵", "Залупа",           14.0, 7),
-    "epic":      ("🟣", "Говно Мамонта",     2.2, 11),
-    "legendary": ("🟠", "Ебовина",           0.5, 16),
-    "mythic":    ("🔴", "Пиздатость",        0.12, 24),
-    "relic":     ("🌟", "Охуевшая Легенда",  0.02, 36),
+    "common":    ("⚪", "Сперма",              50.0, 2),
+    "uncommon":  ("🟢", "Прям Хуйня",          28.0, 4),
+    "rare":      ("🔵", "Залупа",              14.0, 7),
+    "epic":      ("🟣", "Говно Мамонта",        2.2, 11),
+    "legendary": ("🟠", "Ебовина",              0.5, 16),
+    "mythic":    ("🔴", "Пиздатость",           0.12, 24),
+    "relic":     ("⭐", "Охуевшая Легенда",     0.02, 36),
+    "cosmic":    ("⭐⭐", "Космический Пиздец",   0.004, 52),
+    "godlike":   ("⭐⭐⭐", "Абсолютная Елда Мироздания", 0.0008, 75),
 }
 
 # Затухание вклада Удачи в редкость: factor = 1 + LUCK*sqrt(luck) + zone_bonus,
@@ -153,10 +155,12 @@ RARITY_FACTOR_CAP = 1.5
 ITEM_STAT_COUNT = {
     "common": (1, 1), "uncommon": (1, 2), "rare": (2, 2),
     "epic": (2, 3), "legendary": (3, 3), "mythic": (3, 4), "relic": (4, 5),
+    "cosmic": (5, 5), "godlike": (5, 5),
 }
 ITEM_STAT_BUDGET = {
     "common": 2, "uncommon": 4, "rare": 7,
     "epic": 11, "legendary": 16, "mythic": 24, "relic": 36,
+    "cosmic": 52, "godlike": 75,
 }
 
 # Слоты экипировки: code -> (эмодзи, название, тематический стат для фолбэка
@@ -179,6 +183,8 @@ _ITEM_NAMES = {
         "legendary": ["Двуручный Елдак", "Топор Батиного Ремня"],
         "mythic": ["Пенетратор 3000", "Меч-Хуекладенец"],
         "relic": ["Экскалибур из Штанов", "Аннигилятор Целок"],
+        "godlike": ["Абсолютный Хуерез Мироздания"],
+        "cosmic": ["Хуй Господень", "Меч Большого Взрыва"],
     },
     "helmet": {
         "common": ["Шлем Налысо", "Дырявая Панама", "Каска Куколда"],
@@ -188,6 +194,8 @@ _ITEM_NAMES = {
         "legendary": ["Шлем Берсерка-Задрота"],
         "mythic": ["Венец Палача Целок"],
         "relic": ["Корона Хуёвого Короля"],
+        "godlike": ["Корона Творца Вселенных"],
+        "cosmic": ["Нимб Гачимучи", "Шлем Галактического Императора"],
     },
     "armor": {
         "common": ["Обоссанная Майка", "Дырявые Труселя", "Тряпьё Бомжа"],
@@ -197,6 +205,8 @@ _ITEM_NAMES = {
         "legendary": ["Панцирь Дракона-Импотента"],
         "mythic": ["Доспех Бессмертного Дрочера"],
         "relic": ["Эгида Эрекции"],
+        "godlike": ["Эгида Большого Взрыва"],
+        "cosmic": ["Броня Звёздного Дрочера", "Панцирь Чёрной Дыры"],
     },
     "boots": {
         "common": ["Стоптанные Лапти", "Дырявые Кеды", "Тапки Бати"],
@@ -206,6 +216,8 @@ _ITEM_NAMES = {
         "legendary": ["Крылатые Сандалии Гермеса"],
         "mythic": ["Поступь Ебущей Бури"],
         "relic": ["Сапоги-Телепорт в ЛП"],
+        "godlike": ["Поступь по Головам Богов"],
+        "cosmic": ["Сапоги Скорости Света", "Кроссы Варп-Двигателя"],
     },
     "artifact": {
         "common": ["Кроличья Лапка", "Ржавый Пятак", "Амулет Вялого Стояка"],
@@ -215,6 +227,8 @@ _ITEM_NAMES = {
         "legendary": ["Звезда Лудомана"],
         "mythic": ["Слеза Импотента"],
         "relic": ["Кольцо Анального Всевластия"],
+        "godlike": ["Кольцо Всех Колец"],
+        "cosmic": ["Сингулярность в Кармане", "Ядро Нейтронной Звезды"],
     },
 }
 
@@ -326,8 +340,8 @@ DUNGEONS = {
                  ("🤡", "Клоун-Риелтор")],
         "mob_hp": (35, 55), "mob_hp_per_depth": 5,
         "mob_power": (8, 14), "mob_power_per_depth": 2,
-        "mob_bounty": (45, 90), "mob_bounty_per_depth": 8, "mob_item_chance": 0.40,
-        "coins_room": (25, 60), "coins_per_depth": 8, "item_chance": 0.25,
+        "mob_bounty": (40, 75), "mob_bounty_per_depth": 6, "mob_item_chance": 0.40,
+        "coins_room": (20, 50), "coins_per_depth": 6, "item_chance": 0.25,
         "trap_damage": 10, "trap_per_depth": 5, "rest_heal": (10, 25),
         "loot_floor": "uncommon", "loot_bonus": 0.10,
     },
@@ -338,8 +352,8 @@ DUNGEONS = {
                  ("🧌", "Тролль Канализации")],
         "mob_hp": (60, 90), "mob_hp_per_depth": 7,
         "mob_power": (14, 22), "mob_power_per_depth": 3,
-        "mob_bounty": (110, 220), "mob_bounty_per_depth": 15, "mob_item_chance": 0.45,
-        "coins_room": (60, 140), "coins_per_depth": 15, "item_chance": 0.28,
+        "mob_bounty": (80, 160), "mob_bounty_per_depth": 11, "mob_item_chance": 0.45,
+        "coins_room": (45, 100), "coins_per_depth": 11, "item_chance": 0.28,
         "trap_damage": 18, "trap_per_depth": 8, "rest_heal": (15, 35),
         "loot_floor": "uncommon", "loot_bonus": 0.20,
     },
@@ -350,8 +364,8 @@ DUNGEONS = {
                  ("🐲", "Драконыш-Пироман")],
         "mob_hp": (90, 140), "mob_hp_per_depth": 9,
         "mob_power": (22, 34), "mob_power_per_depth": 4,
-        "mob_bounty": (250, 500), "mob_bounty_per_depth": 30, "mob_item_chance": 0.50,
-        "coins_room": (130, 300), "coins_per_depth": 30, "item_chance": 0.30,
+        "mob_bounty": (160, 320), "mob_bounty_per_depth": 20, "mob_item_chance": 0.50,
+        "coins_room": (90, 200), "coins_per_depth": 20, "item_chance": 0.30,
         "trap_damage": 30, "trap_per_depth": 12, "rest_heal": (25, 50),
         "loot_floor": "rare", "loot_bonus": 0.30,
     },
@@ -362,8 +376,8 @@ DUNGEONS = {
                  ("☠️", "Аудитор Ада")],
         "mob_hp": (140, 220), "mob_hp_per_depth": 12,
         "mob_power": (34, 50), "mob_power_per_depth": 6,
-        "mob_bounty": (550, 1100), "mob_bounty_per_depth": 60, "mob_item_chance": 0.55,
-        "coins_room": (300, 700), "coins_per_depth": 60, "item_chance": 0.32,
+        "mob_bounty": (350, 700), "mob_bounty_per_depth": 40, "mob_item_chance": 0.55,
+        "coins_room": (200, 450), "coins_per_depth": 40, "item_chance": 0.32,
         "trap_damage": 50, "trap_per_depth": 18, "rest_heal": (40, 80),
         "loot_floor": "rare", "loot_bonus": 0.45,
     },
@@ -371,11 +385,17 @@ DUNGEONS = {
 
 # --- RPG: экономика (магазин, пассивный доход) -------------------------------
 
-# Сундуки в магазине: code -> параметры. bonus смещает редкость лута к редкой.
+# Сундуки в магазине: code -> параметры. bonus смещает редкость лута к редкой,
+# floor (если задан) — гарантированная минимальная редкость дропа. Удача игрока
+# слегка повышает шанс редкого (тот же √-затухающий фактор, что и в экспедициях).
 SHOP_CHESTS = {
-    "wooden": {"emoji": "📦", "name": "Деревянный сундук", "price": 50, "bonus": 0.0},
-    "silver": {"emoji": "🎁", "name": "Серебряный сундук", "price": 150, "bonus": 0.3},
-    "golden": {"emoji": "💎", "name": "Золотой сундук", "price": 400, "bonus": 0.8},
+    "wooden":   {"emoji": "📦", "name": "Деревянный сундук", "price": 50,   "bonus": 0.0},
+    "silver":   {"emoji": "🎁", "name": "Серебряный сундук", "price": 150,  "bonus": 0.3},
+    "golden":   {"emoji": "💎", "name": "Золотой сундук",    "price": 400,  "bonus": 0.8},
+    "platinum": {"emoji": "🧰", "name": "Платиновый сундук",  "price": 1200,
+                 "bonus": 0.6, "floor": "rare"},
+    "royal":    {"emoji": "👑", "name": "Королевский сундук", "price": 4000,
+                 "bonus": 1.0, "floor": "epic"},
 }
 
 # Стоимость смены класса (сброс/выбор нового)
@@ -401,6 +421,7 @@ PROPERTY_CAP_HOURS = 24
 SELL_PRICES = {
     "common": 5, "uncommon": 12, "rare": 30, "epic": 80,
     "legendary": 200, "mythic": 500, "relic": 1200,
+    "cosmic": 3000, "godlike": 8000,
 }
 
 # Обмен сантиметров на монеты (односторонний, чтобы держать длину умеренной)
