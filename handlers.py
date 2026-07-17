@@ -1067,7 +1067,10 @@ def cmd_shop(chat_key, user):
     )
     rows = []
     for code, ch in config.SHOP_CHESTS.items():
-        text += f"{ch['emoji']} {ch['name']} — {ch['price']} монет\n"
+        floor = ch.get("floor")
+        guarantee = (f" — гарантия от {config.RARITIES[floor][0]}"
+                     if floor else "")
+        text += f"{ch['emoji']} {ch['name']} — {ch['price']} монет{guarantee}\n"
         rows.append([InlineKeyboardButton(
             f"{ch['emoji']} {ch['name']} ({ch['price']})",
             callback_data=f"buy_chest_{code}")])

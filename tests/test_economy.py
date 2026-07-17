@@ -45,6 +45,80 @@ def test_buy_chest_deducts_price(env):
     assert db.get_or_create_player(1)["coins"] == 100 - config.SHOP_CHESTS["wooden"]["price"]
 
 
+def test_floored_chest_guarantees_minimum(env):
+    eco, db, config = env["economy"], env["database"], env["config"]
+    order = config.RARITY_ORDER
+    _coins(db, 1, 10**7)
+    # Платиновый — гарантия от 🔵 (rare); за много покупок ни разу не ниже
+    floor = config.SHOP_CHESTS["platinum"]["floor"]
+    for seed in range(60):
+        r = eco.buy_chest(1, "platinum", rng=random.Random(seed))
+        assert r["status"] == "ok"
+        assert order.index(r["item"]["rarity"]) >= order.index(floor)
+    # Королевский — гарантия от 🟣 (epic)
+    royal_floor = config.SHOP_CHESTS["royal"]["floor"]
+    for seed in range(60):
+        r = eco.buy_chest(1, "royal", rng=random.Random(seed + 500))
+        assert order.index(r["item"]["rarity"]) >= order.index(royal_floor)
+
+
+def test_luck_shifts_chest_rolls_up(env):
+    eco, db, config = env["economy"], env["database"], env["config"]
+    from game import character
+    order = config.RARITY_ORDER
+
+    def avg_tier(uid, samples):
+        total = 0
+        for seed in range(samples):
+            r = eco.buy_chest(uid, "wooden", rng=random.Random(seed))
+            total += order.index(r["item"]["rarity"])
+        return total / samples
+
+    # Новичок без Удачи
+    _coins(db, 1, 10**7)
+    low = avg_tier(1, 400)
+    # Игрок с прокачанной Удачей
+    db.get_or_create_player(2)
+    character.grant_exp(2, 10**7)
+    character.set_class(2, "lucky")
+    _coins(db, 2, 10**7)
+    for _ in range(30):                       # вложим свободные очки в удачу
+        character.train_stat(2, "luck")
+    high = avg_tier(2, 400)
+    assert high > low                          # удача поднимает средний тир
+
+
+def test_craft_chain_to_top_tier(env):
+    eco, db, config = env["economy"], env["database"], env["config"]
+    from game import loot
+    db.get_or_create_player(1)
+    tiers = config.RARITY_ORDER
+    # relic -> cosmic -> godlike, затем крафт с потолка запрещён
+    for _ in range(5):
+        db.add_item(1, loot.generate_of_rarity("relic", rng=random.Random(7)))
+    r = eco.craft(1, "relic", rng=random.Random(8))
+    assert r["status"] == "ok" and r["item"]["rarity"] == "cosmic"
+    for _ in range(4):
+        db.add_item(1, loot.generate_of_rarity("cosmic", rng=random.Random(9)))
+    r = eco.craft(1, "cosmic", rng=random.Random(10))  # теперь 5 космических
+    assert r["status"] == "ok" and r["item"]["rarity"] == "godlike"
+    # Абсолют — потолок, крафт запрещён
+    for _ in range(5):
+        db.add_item(1, loot.generate_of_rarity("godlike", rng=random.Random(11)))
+    assert eco.craft(1, "godlike")["status"] == "max_tier"
+    assert tiers[-1] == "godlike"
+
+
+def test_new_tiers_have_sell_prices(env):
+    config = env["config"]
+    for rarity in config.RARITY_ORDER:
+        assert rarity in config.SELL_PRICES
+    # Цены строго растут с тиром
+    prices = [config.SELL_PRICES[r] for r in config.RARITY_ORDER]
+    assert prices == sorted(prices)
+    assert prices == sorted(set(prices))       # без плато
+
+
 def test_change_class_costs_coins(env):
     eco, db, config = env["economy"], env["database"], env["config"]
     _coins(db, 1, config.CLASS_CHANGE_COST)
