@@ -54,7 +54,15 @@ def hit(user_id, chat_key, rng=random):
     if crit:
         damage *= 2
 
-    new_hp = database.apply_boss_hit(boss["id"], user_id, damage)
+    applied = database.apply_boss_hit(boss["id"], user_id, damage,
+                                      config.BOSS_HIT_COOLDOWN)
+    if applied["result"] == "no_boss":
+        return {"status": "no_boss"}
+    if applied["result"] == "cooldown":
+        # Проиграли гонку двойного клика — сообщим остаток как полный кулдаун
+        return {"status": "cooldown", "left": cooldown_left(boss["id"], user_id)
+                or config.BOSS_HIT_COOLDOWN}
+    new_hp = applied["hp"]
     if new_hp <= 0:
         if database.defeat_boss(boss["id"]):
             rewards = _distribute_rewards(boss, rng)

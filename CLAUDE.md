@@ -35,11 +35,16 @@ CI: `.github/workflows/ci.yml` (ruff + pytest). Деплой: `deploy/upgrade.sh
   (exp/level/klass/coins/ферма), player_items, expeditions, dungeon_runs.
 - **Ленивые события**: экспедиции/доход фермы считаются в момент забора
   (сравнение с `ends_at`/`income_at`), таймеры не обязательны. JobQueue-посты —
-  best-effort надстройка.
+  best-effort надстройка. Дуэль тоже протухает лениво: `_accept_duel` проверяет
+  `created_at + DUEL_TIMEOUT` (`_duel_is_stale`) — job таймаута гибнет при
+  рестарте, а вызов не должен «жить вечно».
 - **Атомарность**: гонки решаются guarded UPDATE + rowcount: `apply_grow`
   (раз в день), `claim_duel`, `claim_expedition`, `defeat_boss`,
   `finish_dungeon_run`. Паттерн: UPDATE ... WHERE status='active' → rowcount==0
-  значит «уже занято».
+  значит «уже занято». Монеты тратятся ТОЛЬКО через `database.spend_coins`
+  (`UPDATE ... WHERE coins >= amount`) — чтение-проверка-списание двумя запросами
+  уводило баланс в минус при дабл-клике. Удар по боссу — `apply_boss_hit` с
+  гейтом по статусу И по кулдауну (upsert `WHERE last_hit_at <= threshold`).
 - **Ответ на callback — РОВНО ОДИН РАЗ** (Telegram игнорирует повторные и попап
   теряется). Только через `_answer(query, text, alert=)` — НИКОГДА не звать
   `query.answer()` напрямую и не отвечать «заранее». `handle_button` в finally
@@ -134,9 +139,12 @@ env `DATABASE_PATH` (тесты подменяют + `importlib.reload(config, d
   Звёзды крайне редкие «в диких» (relic ≈1/5000, godlike ≈1/140000), но
   скрафтить можно (5 relic→cosmic→godlike). Статы/бюджет/цены продажи растут по
   тирам (`ITEM_STAT_COUNT/ITEM_STAT_BUDGET/SELL_PRICES`).
-- Лут: веса редкостей × factor^i, **factor = 1 + LUCK_RARITY_FACTOR·√luck +
-  zone_bonus, кап RARITY_FACTOR_CAP** (затухание — иначе Удача раздувает верх).
-  Веса верхних тиров намеренно низкие, чтобы редкое было редким.
+- Лут: веса редкостей × factor^i, **factor = 1 + luck_boost + zone_bonus**, где
+  `luck_boost = min(LUCK_BOOST_CAP, LUCK_RARITY_FACTOR·√luck)` — у вклада Удачи
+  СВОЙ кап, поэтому на дорогих сундуках (zone_bonus ≥ 0.5) Удача продолжает
+  двигать ролл, а не упирается в общий потолок RARITY_FACTOR_CAP (раньше кап
+  накрывал сумму и Удача на золотом+ не работала). Веса верхних тиров намеренно
+  низкие. `loot._rarity_factor()` — единая формула для обоих роллов.
 - Подземелья (`config.DUNGEONS`, 5 шт., гейтинг по уровню): каждый шаг — комната
   по весам `DUNGEON_ROOM_WEIGHTS` (моб 40% / сокровище 30% / ловушка 20% /
   привал 10%). Моб хранится в `dungeon_runs.room` (JSON) — пока он там, deeper и

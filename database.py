@@ -236,6 +236,17 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_grow_history_chat "
             "ON grow_history (chat_id, created_at)"
         )
+        # Индексы под горячие выборки (иначе фулскан по всей таблице)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_player_items_user "
+                     "ON player_items (user_id, equipped)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_expeditions_user "
+                     "ON expeditions (user_id, status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_expeditions_chat "
+                     "ON expeditions (chat_key, status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_bosses_chat "
+                     "ON bosses (chat_key, status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_dungeon_runs_user "
+                     "ON dungeon_runs (user_id, status)")
 
 
 # --- Пользователи и размеры -------------------------------------------------
@@ -385,13 +396,6 @@ def get_weekly_top(chat_id, limit=10, days=7):
 def _timedelta(days):
     from datetime import timedelta
     return timedelta(days=days)
-
-
-def get_chat_ids():
-    """Список всех известных чатов (для фоновых задач)."""
-    with _connect() as conn:
-        rows = conn.execute("SELECT DISTINCT chat_id FROM user_sizes").fetchall()
-    return [r["chat_id"] for r in rows]
 
 
 # --- Писюн дня --------------------------------------------------------------
@@ -733,6 +737,23 @@ def adjust_player_coins(user_id, delta):
     return int(row["coins"]) if row else 0
 
 
+def spend_coins(user_id, amount) -> bool:
+    """Атомарно списать ``amount`` монет, если их хватает. True при успехе.
+
+    Гонка «два клика/два устройства» решается на уровне БД: guarded UPDATE
+    с ``coins >= amount`` спишет ровно один раз, баланс не уходит в минус.
+    ``amount`` предполагается неотрицательным (для покупок/входов).
+    """
+    if amount <= 0:
+        return True
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE players SET coins = coins - ? WHERE user_id = ? AND coins >= ?",
+            (amount, user_id, amount),
+        )
+        return cur.rowcount > 0
+
+
 def set_income_at(user_id, ts):
     """Обновить время последнего сбора пассивного дохода."""
     with _connect() as conn:
@@ -878,6 +899,15 @@ def consume_items_for_craft(user_id, rarity, count):
     return True
 
 
+def count_inventory(user_id) -> int:
+    """Всего предметов у игрока (для пометки «показано N из M»)."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM player_items WHERE user_id = ?", (user_id,)
+        ).fetchone()
+    return int(row["n"])
+
+
 def get_inventory(user_id, limit=None):
     """Предметы игрока (сначала надетые, затем по редкости)."""
     query = "SELECT * FROM player_items WHERE user_id = ? ORDER BY equipped DESC, id DESC"
@@ -920,15 +950,6 @@ def equip_item(user_id, item_id):
     return True
 
 
-def unequip_item(user_id, item_id):
-    """Снять предмет."""
-    with _connect() as conn:
-        conn.execute(
-            "UPDATE player_items SET equipped = 0 WHERE id = ? AND user_id = ?",
-            (item_id, user_id),
-        )
-
-
 # --- Боссы ------------------------------------------------------------------
 
 def get_active_boss(chat_key):
@@ -969,24 +990,44 @@ def get_boss_hit(boss_id, user_id):
     return dict(row) if row else None
 
 
-def apply_boss_hit(boss_id, user_id, damage):
-    """Нанести урону боссу (атомарно) и учесть вклад. Возвращает новый HP."""
+def apply_boss_hit(boss_id, user_id, damage, cooldown_seconds):
+    """Атомарно ударить босса: гейт по статусу И по кулдауну игрока.
+
+    Гонка (двойной клик, добивание) решается на уровне БД:
+    * вклад пишется через upsert с ``WHERE last_hit_at <= threshold`` — второй
+      мгновенный клик не проходит кулдаун и урон не задваивается;
+    * урон по HP гейтится ``status='active'`` — по мёртвому боссу не проходит.
+
+    Возвращает ``{"result": "hit"|"cooldown"|"no_boss", "hp": int}``.
+    """
+    from datetime import timedelta
+    threshold = (utils.now() - timedelta(seconds=cooldown_seconds)).isoformat()
+    now = utils.now().isoformat()
     with _connect() as conn:
-        conn.execute(
-            "UPDATE bosses SET hp = hp - ? WHERE id = ? AND status = 'active'",
-            (damage, boss_id),
-        )
-        conn.execute(
+        boss = conn.execute(
+            "SELECT hp, status FROM bosses WHERE id = ?", (boss_id,)
+        ).fetchone()
+        if boss is None or boss["status"] != "active":
+            return {"result": "no_boss", "hp": 0}
+        cur = conn.execute(
             """INSERT INTO boss_hits (boss_id, user_id, damage, hits, last_hit_at)
                VALUES (?, ?, ?, 1, ?)
                ON CONFLICT(boss_id, user_id) DO UPDATE
                  SET damage = damage + excluded.damage,
                      hits = hits + 1,
-                     last_hit_at = excluded.last_hit_at""",
-            (boss_id, user_id, damage, utils.now().isoformat()),
+                     last_hit_at = excluded.last_hit_at
+                 WHERE boss_hits.last_hit_at IS NULL
+                    OR boss_hits.last_hit_at <= ?""",
+            (boss_id, user_id, damage, now, threshold),
+        )
+        if cur.rowcount == 0:
+            return {"result": "cooldown", "hp": int(boss["hp"])}
+        conn.execute(
+            "UPDATE bosses SET hp = hp - ? WHERE id = ? AND status = 'active'",
+            (damage, boss_id),
         )
         row = conn.execute("SELECT hp FROM bosses WHERE id = ?", (boss_id,)).fetchone()
-    return int(row["hp"]) if row else 0
+    return {"result": "hit", "hp": int(row["hp"]) if row else 0}
 
 
 def defeat_boss(boss_id):
@@ -1001,11 +1042,17 @@ def defeat_boss(boss_id):
 
 
 def get_boss_contributors(boss_id):
-    """Участники боя, отсортированные по нанесённому урону (убыв.)."""
+    """Участники боя с именами, отсортированные по урону (убыв.).
+
+    Имена берутся одним JOIN, чтобы карточка босса не дёргала БД на каждого
+    бойца (был N+1 при перерисовке).
+    """
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT user_id, damage, hits FROM boss_hits WHERE boss_id = ? "
-            "ORDER BY damage DESC",
+            "SELECT h.user_id AS user_id, h.damage AS damage, h.hits AS hits, "
+            "       p.username AS username, p.first_name AS first_name "
+            "FROM boss_hits h LEFT JOIN players p ON p.user_id = h.user_id "
+            "WHERE h.boss_id = ? ORDER BY h.damage DESC",
             (boss_id,),
         ).fetchall()
     return [dict(r) for r in rows]

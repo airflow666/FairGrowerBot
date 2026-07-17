@@ -88,6 +88,31 @@ def test_luck_shifts_chest_rolls_up(env):
     assert high > low                          # удача поднимает средний тир
 
 
+def test_luck_affects_expensive_chest(env):
+    """Регресс A3: Удача должна двигать ролл и на дорогих сундуках с высоким
+    zone_bonus (раньше общий кап её полностью съедал на золотом+)."""
+    eco, db, config = env["economy"], env["database"], env["config"]
+    from game import character
+    order = config.RARITY_ORDER
+
+    def avg_tier(uid):
+        total = 0
+        for seed in range(400):
+            r = eco.buy_chest(uid, "golden", rng=random.Random(seed))
+            total += order.index(r["item"]["rarity"])
+        return total / 400
+
+    _coins(db, 1, 10**8)
+    low = avg_tier(1)
+    db.get_or_create_player(2)
+    character.grant_exp(2, 10**7)
+    character.set_class(2, "lucky")
+    _coins(db, 2, 10**8)
+    for _ in range(30):
+        character.train_stat(2, "luck")
+    assert avg_tier(2) > low
+
+
 def test_craft_chain_to_top_tier(env):
     eco, db, config = env["economy"], env["database"], env["config"]
     from game import loot

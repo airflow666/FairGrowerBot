@@ -275,6 +275,8 @@ def _menu_grid(items, owner_id):
 def cmd_menu(chat_key, user):
     """Главное меню: классика + вход в RPG. Кратко, без стены текста."""
     player = character.get_or_create(user.id, user.username, user.first_name)
+    if player["coins"] >= config.ACH_RICH_COINS:
+        _achievement_suffix(user.id, chat_key, ["rich"])
     size = database.get_user_size(user.id, chat_key)
     name = format_mention(user.id, user.username, user.first_name)
     text = (
@@ -360,10 +362,10 @@ def cmd_grow(chat_key, user):
         text += f"\n🔥 Дрочу {result['streak']} дн. подряд"
 
     codes = ["first_grow"]
+    if new_size >= 50:
+        codes.append("size_50")
     if new_size >= 100:
         codes.append("size_100")
-    elif new_size >= 50:
-        codes.append("size_50")
     if change == config.GROW_MAX:
         codes.append("jackpot")
     if change == config.GROW_MIN:
@@ -592,8 +594,11 @@ def cmd_expedition(chat_key, user):
     for code, zone, unlocked in expeditions.available_zones(player["level"]):
         dur = _format_duration(zone["duration"])
         if unlocked:
+            floor = zone.get("loot_floor")
+            guarantee = f", лут от {config.RARITIES[floor][0]}" if floor else ""
             text += (f"{zone['emoji']} <b>{zone['name']}</b> — {dur}, "
-                     f"опыт {zone['exp']}, монеты {zone['coins'][0]}–{zone['coins'][1]}\n")
+                     f"опыт {zone['exp']}, монеты {zone['coins'][0]}–{zone['coins'][1]}"
+                     f"{guarantee}\n")
             rows.append([InlineKeyboardButton(f"{zone['emoji']} {zone['name']}",
                                               callback_data=f"start_exp_{code}")])
         else:
@@ -701,9 +706,15 @@ def _item_line(it):
 
 def cmd_inventory(chat_key, user):
     character.get_or_create(user.id, user.username, user.first_name)
+    total = database.count_inventory(user.id)
     items = database.get_inventory(user.id, limit=config.INVENTORY_DISPLAY_LIMIT)
     if not items:
         return ("🎒 Инвентарь пуст.\nОтправляйся в экспедицию за добычей! 🗺️", None)
+
+    # Ачивка «Звёздный Барыга» — есть звёздная (relic+) шмотка
+    order = config.RARITY_ORDER
+    if any(order.index(it["rarity"]) >= order.index("relic") for it in items):
+        _achievement_suffix(user.id, chat_key, ["star_owner"])
 
     equipped = {i["slot"]: i for i in items if i["equipped"]}
     text = "🎒 <b>Инвентарь</b>\n\n<b>Надето:</b>\n"
@@ -711,10 +722,11 @@ def cmd_inventory(chat_key, user):
         it = equipped.get(slot)
         text += f"{emoji} {sname}: {_item_line(it) if it else '—'}\n"
 
-    text += "\n<b>Предметы:</b> (нажми, чтобы надеть)\n"
+    shown = len(items)
+    header = f"\n<b>Предметы</b> (показано {shown} из {total}):\n" if total > shown \
+        else "\n<b>Предметы:</b> (нажми, чтобы надеть)\n"
+    text += header
     rows = []
-    # Учёт хлама для быстрой распродажи
-    scrap = {}
     for it in items:
         mark = "✅ " if it["equipped"] else ""
         text += f"{mark}{_item_line(it)}\n"
@@ -725,15 +737,16 @@ def cmd_inventory(chat_key, user):
                 InlineKeyboardButton(f"💰 {config.SELL_PRICES.get(it['rarity'], 0)}",
                                      callback_data=f"sell_{it['id']}"),
             ])
-            scrap[it["rarity"]] = scrap.get(it["rarity"], 0) + 1
 
-    # Быстрая распродажа обычных/необычных
+    # Быстрая распродажа хлама: счётчики по ВСЕЙ базе, а не по показанным
+    # (иначе с полным инвентарём число врёт, а продавалось бы всё равно всё).
     bulk = []
-    for rarity in ("common", "uncommon"):
-        if scrap.get(rarity):
+    for rarity in ("common", "uncommon", "rare"):
+        cnt = database.count_items_by_rarity(user.id, rarity)
+        if cnt:
             emoji = config.RARITIES[rarity][0]
             bulk.append(InlineKeyboardButton(
-                f"Продать все {emoji} ({scrap[rarity]})",
+                f"Продать все {emoji} ({cnt})",
                 callback_data=f"sellall_{rarity}"))
     if bulk:
         rows.append(bulk)
@@ -804,8 +817,7 @@ def boss_message(active_boss, owner_id=None):
     if contributors:
         text += "\n\n<b>Кто как насаживает:</b>\n"
         for c in contributors[:5]:
-            p = database.get_or_create_player(c["user_id"])
-            cname = format_mention(p["user_id"], p["username"], p["first_name"])
+            cname = format_mention(c["user_id"], c["username"], c["first_name"])
             text += f"🩸 {cname} — {int(c['damage'])}\n"
     hit_data = f"boss_hit_{owner_id}" if owner_id else "boss_hit"
     markup = InlineKeyboardMarkup(
@@ -854,6 +866,9 @@ async def _boss_hit(query, context, chat_key, owner_id=None):
         await query.edit_message_text(text, parse_mode=ParseMode.HTML,
                                       reply_markup=markup)
     elif status == "killed":
+        # Ачивка «Затащил Босса» — всем, кто вложил урон
+        for r in result["rewards"]:
+            database.unlock_achievement(r["user_id"], chat_key, "boss_slayer")
         await _answer(query, "💥 БОСС ПОВЕРЖЕН!")
         await query.edit_message_text(
             _boss_defeat_text(result), parse_mode=ParseMode.HTML,
@@ -941,6 +956,8 @@ async def _dungeon_enter(query, context, chat_key, dungeon_code):
 
 
 async def _dungeon_death(query, owner_id, depth, damage, cause):
+    if depth >= config.ACH_DEEP_DIVE_DEPTH:
+        database.unlock_achievement(owner_id, _chat_key(query), "deep_diver")
     await _answer(query, "💀 Ты зафидил!", alert=True)
     await query.edit_message_text(
         f"💀 <b>Слился на глубине {depth}.</b>\n"
@@ -1044,6 +1061,8 @@ async def _dungeon_leave(query, context, owner_id):
         await _answer(query, "Сначала разберись с мобом (или забег уже завершён).",
                       alert=True)
         return
+    if summary["depth"] >= config.ACH_DEEP_DIVE_DEPTH:
+        database.unlock_achievement(owner_id, _chat_key(query), "deep_diver")
     items_text = "\n".join(_item_full(i) for i in summary["items"]) or "—"
     text = (
         f"🏰 <b>Свалил живым с глубины {summary['depth']}!</b>\n"
@@ -1174,7 +1193,10 @@ def cmd_farm(chat_key, user):
         cap = prop["rate_per_hour"] * config.PROPERTY_CAP_HOURS
         text += (f"{prop['emoji']} {prop['name']} (ур. {level}) — "
                  f"{prop['rate_per_hour']} монет/час\n"
-                 f"🪙 Накоплено: <b>{pending}</b> / {cap}\n\n")
+                 f"🪙 Накоплено: <b>{pending}</b> / {cap}\n")
+        if pending >= cap:
+            text += "⚠️ <b>Ферма переполнена</b> — собирай, дальше капает в пустоту!\n"
+        text += "\n"
     else:
         text += "У тебя пока нет фермы — купи первую для пассивного дохода.\n\n"
     text += f"Баланс: {int(player['coins'])} монет"
@@ -1377,6 +1399,22 @@ async def _create_duel(query, context, chat_key, bet):
     _schedule_duel_timeout(context, duel_id, chat_key, query)
 
 
+def _duel_is_stale(duel) -> bool:
+    """Истёк ли срок вызова по времени создания (переживает рестарт бота)."""
+    created = duel.get("created_at")
+    if not created:
+        return False
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(created)
+    except (ValueError, TypeError):
+        return False
+    from utils import TZ, now
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=TZ)
+    return (now() - dt).total_seconds() > config.DUEL_TIMEOUT
+
+
 def _schedule_duel_timeout(context, duel_id, chat_key, query):
     if context.job_queue is None:
         return
@@ -1421,6 +1459,14 @@ async def _accept_duel(query, context, chat_key, duel_id):
     # ссылалась на старый — вызов становился мёртвым.
     duel = database.get_duel(duel_id)
     if duel is None or duel["status"] != "active":
+        await _answer(query, "Дуэль уже завершена или истекла!", alert=True)
+        return
+
+    # Ленивое протухание: job таймаута живёт в памяти и гибнет при рестарте
+    # бота, поэтому возраст вызова проверяем ещё и здесь — иначе «активный»
+    # вызов можно принять хоть через неделю.
+    if _duel_is_stale(duel):
+        database.expire_duel(duel_id)
         await _answer(query, "Дуэль уже завершена или истекла!", alert=True)
         return
 
